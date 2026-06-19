@@ -1,0 +1,3 @@
+# AstrBot API + standard library (sqlite3, json, asyncio, datetime) only.
+# This plugin intentionally has no third-party dependencies so that it can
+# run on a vanilla AstrBot installation without any extra pip install.

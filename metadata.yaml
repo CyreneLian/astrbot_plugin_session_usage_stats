@@ -1,0 +1,8 @@
+name: astrbot_plugin_session_usage_stats
+display_name: 模型用量统计
+desc: 统计 AstrBot 全部模型在过去24小时/7天/30天内的调用次数与 Token 消耗，并提供美观的可视化模型用量统计仪表盘、趋势排行、各会话对话轮数、平台/会话辅助视图和低开销增量扫描。
+help: 打开插件管理页查看“模型用量统计”仪表盘；也可发送“会话统计 今日 / 本周 / 本月 / 模式 / 补扫”查看兼容的会话统计命令。
+version: v2.01
+astrbot_version: ">=4.24"
+author: 往昔的涟漪
+repo: ""

@@ -1,0 +1,48 @@
+{
+  "enable_auto_scan": {
+    "description": "是否开启自动扫描",
+    "type": "bool",
+    "hint": "开启后每隔指定间隔自动增量扫描历史消息；关闭则仅在查询时补扫",
+    "default": true
+  },
+  "auto_scan_interval_minutes": {
+    "description": "自动扫描间隔（分钟）",
+    "type": "int",
+    "hint": "仅在开启自动扫描时生效。设定增量扫描任务的执行间隔。",
+    "default": 5
+  },
+  "scan_batch_size": {
+    "description": "单次扫描最大消息数",
+    "type": "int",
+    "hint": "防止单次扫描处理过多消息",
+    "default": 500
+  },
+  "enabled_platforms": {
+    "description": "启用统计的平台ID",
+    "type": "list",
+    "hint": "例如 webchat、aiocqhttp。无需与事件钩子捕获的平台重复填写。",
+    "default": [
+      "webchat"
+    ]
+  },
+  "include_threads": {
+    "description": "是否统计 webchat_thread",
+    "type": "bool",
+    "hint": "若为 true 且 enabled_platforms 未包含 webchat_thread，则自动附加",
+    "default": false
+  },
+  "enable_event_capture": {
+    "description": "是否启用事件钩子捕获（适用于QQ等不写历史表的平台）",
+    "type": "bool",
+    "hint": "开启后，事件钩子会实时捕获消息并写库；关闭则只走历史表扫描路径",
+    "default": true
+  },
+  "event_capture_platforms": {
+    "description": "事件钩子捕获的平台列表",
+    "type": "list",
+    "hint": "仅在 enable_event_capture 开启时生效；默认 aiocqhttp",
+    "default": [
+      "aiocqhttp"
+    ]
+  }
+}
