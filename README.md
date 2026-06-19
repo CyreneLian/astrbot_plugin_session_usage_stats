@@ -1,7 +1,5 @@
 # 📊 astrbot_plugin_session_usage_stats
 
-> A lightweight AstrBot plugin that tracks per-model token usage, call counts, and trends over rolling 24h / 7d / 30d windows — with a clean web dashboard for visualising model share, platform share, top sessions, trend lines, and a searchable detail table.
->
 > 统计 AstrBot 全部模型在过去 24 小时 / 7 天 / 30 天内的调用次数与 Token 消耗，并提供精美的**模型用量统计仪表盘**、趋势排行、平台 / 会话辅助视图和低开销增量扫描。
 
 ## 🌸 模型用量统计插件
