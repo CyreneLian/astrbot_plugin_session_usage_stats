@@ -263,7 +263,20 @@ td.right,th.right{text-align:right}
 }
 
 @media(max-width:1400px){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:1080px){.layout{grid-template-columns:1fr}.donut-wrap{grid-template-columns:1fr}.bar-row{grid-template-columns:1fr}.num{text-align:left}.hero{align-items:flex-start;flex-direction:column}.actions{width:100%}}
+@media(max-width:1080px){
+  .layout{grid-template-columns:1fr}
+  .donut-wrap{grid-template-columns:1fr;gap:24px}
+  .bar-row{grid-template-columns:1fr}
+  .num{text-align:left}
+  .hero{align-items:flex-start;flex-direction:column}
+  .actions{width:100%}
+  #modelDonut.chart.small,#platformDonut.chart.small{height:auto;min-height:0;max-height:none;overflow:visible}
+  #modelDonut .legend{max-height:none;overflow:visible}
+  .donut{margin:0 auto}
+  .panel h3.model-title{display:flex;flex-direction:column;align-items:flex-start;gap:12px;grid-template-columns:none}
+  .panel h3.model-title .model-switches{position:static;transform:none;justify-content:flex-start;flex-wrap:wrap;gap:12px;min-width:0;width:100%}
+  .panel h3.model-title small{align-self:flex-start}
+}
 @media(max-width:900px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){body{padding:16px}.cards{grid-template-columns:1fr}.title h1{font-size:1.35rem}.panel{padding:18px}.input{min-width:100%;width:100%}.tabs{display:flex;border-radius:18px}.tab{flex:1}.panel h3{display:flex;align-items:flex-start;flex-direction:column}.panel h3 .mini-switch{justify-self:auto}.panel h3 small{justify-self:auto}.mini-switch{margin-left:0}}
 .top-loader{position:fixed;top:0;left:0;right:0;height:3px;z-index:9999;background:transparent;pointer-events:none;overflow:hidden}
