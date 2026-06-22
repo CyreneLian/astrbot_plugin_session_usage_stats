@@ -404,7 +404,7 @@ class SessionUsageStatsPlugin(Star):
 
         # 兜底：主历史库的精确扫描。
         # 仅作为插件刚启用且尚未进行首次扫描、或历史消息未被任何路径捕获的极端情况下的补偿。
-        # 不再“因为历史库有该会话就直接跳过实时库”——这正是修复清理历史后统计丢数漏洞的关键。
+        # 如果 hour 桶里已经有了该会话的数据，则跳过主历史库的累加，防止数据重复计算（双重计入）。
         for pid, sid, _dt_cst, input_tokens, output_tokens, total_tokens in self._iter_history_bot_rows(start, end, cst):
             pid = str(pid)
             sid = str(sid)
@@ -413,6 +413,8 @@ class SessionUsageStatsPlugin(Star):
             if session_id is not None and sid != str(session_id):
                 continue
             key = (pid, sid)
+            if key in grouped:
+                continue
             item = grouped.setdefault(key, {
                 "platform_id": pid,
                 "session_id": sid,
@@ -505,23 +507,11 @@ class SessionUsageStatsPlugin(Star):
             }
             sessions_by_key: dict[str, set[str]] = {k: set() for k in labels}
 
-            for platform_id, session_id, dt_cst, input_tokens, output_tokens, total_tokens in self._iter_history_bot_rows(start, end, cst):
-                key = key_of(dt_cst)
-                if key not in empty:
-                    continue
-                item = empty[key]
-                item["round_count"] += 1
-                item["user_message_count"] += 1
-                item["bot_message_count"] += 1
-                item["input_tokens"] += input_tokens
-                item["output_tokens"] += output_tokens
-                item["total_tokens"] += total_tokens
-                sessions_by_key[key].add(f"{platform_id}:{session_id}")
-
-            # 兜底合并 usage_stats 中实时捕获的数据（常见于 QQ/aiocqhttp）。
-            # 新数据会写入 hour 桶，因此可以按滚动窗口准确落到对应趋势点，不再退化成本日 0 点到 24 点。
-            # 第一权威源：插件自身 usage_stats 的 hour 桶直接驱动趋势图。
+            # 趋势图优先使用插件自身 usage_stats 的 hour 桶作为第一权威源驱动。
             # 这样即使主历史库的消息被清理，趋势图也不会丢数。
+            # 我们记录已经填入的会话小时 key，防止兜底主历史库扫描时重复计入（双重计入）。
+            filled_keys: set[tuple[str, str, str]] = set()
+
             for row in self._query_stored_hour_rows_for_trend(self._rolling_hour_bucket_keys(start, end, cst)):
                 try:
                     hour_dt = datetime.strptime(row["bucket_key"], "%Y-%m-%d %H").replace(tzinfo=cst)
@@ -538,8 +528,28 @@ class SessionUsageStatsPlugin(Star):
                 item["output_tokens"] += int(row["output_tokens"] or 0)
                 item["total_tokens"] += int(row["total_tokens"] or 0)
                 sessions_by_key[key].add(f"{row['platform_id']}:{row['session_id']}")
+                filled_keys.add((str(row["platform_id"]), str(row["session_id"]), row["bucket_key"]))
 
             # 兜底：主历史库的精确扫描，仅用于补偿未及时进入 hour 桶的边缘场景。
+            # 若对应的会话在对应的小时已经存在于实时库中，则跳过，防止双重计入。
+            for platform_id, session_id, dt_cst, input_tokens, output_tokens, total_tokens in self._iter_history_bot_rows(start, end, cst):
+                key = key_of(dt_cst)
+                if key not in empty:
+                    continue
+                
+                # 构造 hour 格式的 key 用于去重比对
+                hour_str = dt_cst.strftime("%Y-%m-%d %H")
+                if (str(platform_id), str(session_id), hour_str) in filled_keys:
+                    continue
+
+                item = empty[key]
+                item["round_count"] += 1
+                item["user_message_count"] += 1
+                item["bot_message_count"] += 1
+                item["input_tokens"] += input_tokens
+                item["output_tokens"] += output_tokens
+                item["total_tokens"] += total_tokens
+                sessions_by_key[key].add(f"{platform_id}:{session_id}")
 
             data = []
             for key in labels:
