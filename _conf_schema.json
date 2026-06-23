@@ -44,5 +44,17 @@
     "default": [
       "aiocqhttp"
     ]
+  },
+  "auto_cleanup_enabled": {
+    "description": "是否开启自动清理旧统计数据",
+    "type": "bool",
+    "hint": "开启后会在启动时以及自动扫描后，删除超过保留天数的插件统计数据",
+    "default": true
+  },
+  "auto_cleanup_retention_days": {
+    "description": "统计数据保留天数",
+    "type": "int",
+    "hint": "仅影响插件自身数据库中的统计数据，默认保留 30 天",
+    "default": 30
   }
 }
