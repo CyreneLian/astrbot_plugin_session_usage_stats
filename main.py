@@ -39,12 +39,16 @@ class SessionUsageStatsPlugin(Star):
         self.include_threads = bool(config.get("include_threads", False))
         self.enable_event_capture = bool(config.get("enable_event_capture", False))
         self.event_capture_platforms = list(config.get("event_capture_platforms", ["aiocqhttp"]) or ["aiocqhttp"])
+        self.auto_cleanup_enabled = bool(config.get("auto_cleanup_enabled", True))
+        self.auto_cleanup_retention_days = int(config.get("auto_cleanup_retention_days", 30) or 30)
+        self.auto_cleanup_vacuum = bool(config.get("auto_cleanup_vacuum", True))
         self._event_lock = asyncio.Lock()
         self._model_call_lock = asyncio.Lock()
         self._model_call_buffer: dict[tuple[str, str, str, str, str, str], list[int]] = {}
         self._model_call_flush_task: asyncio.Task | None = None
         self._wrapped_provider_ids: set[int] = set()
         self._provider_call_context = {}
+        self._last_cleanup_at = 0.0
         # 最近一次成功聊天调用的真实 Provider/模型。
         # AstrBot fallback 时 context.get_using_provider() 仍可能指向默认第一个 Provider，
         # 因此 on_agent_done 需要优先参考这里由 Provider wrapper 捕获到的实际成功项。
@@ -70,6 +74,8 @@ class SessionUsageStatsPlugin(Star):
         self._init_sqlite()
 
     async def initialize(self):
+        if self.auto_cleanup_enabled:
+            await self._cleanup_old_data(reason="startup")
         if self.enable_auto_scan:
             self._start_auto_scan_task()
         self._wrap_model_call_providers()
@@ -827,32 +833,16 @@ class SessionUsageStatsPlugin(Star):
         import sqlite3 as _sq
 
         try:
-            # 清空时必须把扫描游标推进到主历史库当前末尾。
-            # 否则下一次查询前补扫/自动扫描会从 0 重新扫描旧消息，表现为“清空后数据又回来了”。
-            async with self._scan_lock:
-                max_history_id = self._get_main_history_max_id()
-                conn = _sq.connect(self.db_path, timeout=10)
-                try:
-                    conn.execute("PRAGMA busy_timeout=10000")
-                    conn.execute("DELETE FROM usage_stats")
-                    conn.execute("DELETE FROM model_usage_stats")
-                    conn.execute("DELETE FROM model_call_stats")
-                    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                    conn.execute(
-                        """
-                        INSERT INTO scan_state(state_key, last_message_id, last_scan_at, clear_at)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(state_key) DO UPDATE SET
-                            last_message_id=excluded.last_message_id,
-                            last_scan_at=excluded.last_scan_at,
-                            clear_at=excluded.clear_at
-                        """,
-                        ("global", int(max_history_id), now, now),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
-            return jsonify({"ok": True, "last_message_id": max_history_id})
+            result = await self._cleanup_old_data(reason="manual")
+            vacuumed = 0
+            conn = _sq.connect(self.db_path, timeout=10)
+            try:
+                conn.execute("VACUUM")
+                vacuumed = 1
+            finally:
+                conn.close()
+            result["vacuumed"] = vacuumed
+            return jsonify({"ok": True, **result})
         except Exception as e:
             return jsonify(self._api_error_payload("clear", e, last_message_id=None))
 
@@ -1872,6 +1862,7 @@ class SessionUsageStatsPlugin(Star):
         while not self._stopping:
             try:
                 await self.scan_incremental(reason="auto")
+                await self._cleanup_old_data(reason="auto_scan")
             except asyncio.CancelledError:
                 raise
             except sqlite3.OperationalError as e:
@@ -1903,6 +1894,51 @@ class SessionUsageStatsPlugin(Star):
             except Exception:
                 last_id = 0
             return {"processed": 0, "touched_sessions": 0, "last_message_id": last_id}
+
+    async def _cleanup_old_data(self, reason: str = "manual") -> dict[str, int]:
+        if not self.auto_cleanup_enabled:
+            return {"deleted_usage": 0, "deleted_model_usage": 0, "deleted_model_call": 0, "vacuumed": 0}
+        now_ts = time.monotonic()
+        if reason != "manual" and now_ts - self._last_cleanup_at < 3600:
+            return {"deleted_usage": 0, "deleted_model_usage": 0, "deleted_model_call": 0, "vacuumed": 0}
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(self.auto_cleanup_retention_days or 30)))
+        cutoff_iso = cutoff.isoformat(timespec="seconds")
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            deleted_usage = conn.execute(
+                "DELETE FROM usage_stats WHERE updated_at IS NOT NULL AND updated_at < ?",
+                (cutoff_iso,),
+            ).rowcount
+            deleted_model_usage = conn.execute(
+                "DELETE FROM model_usage_stats WHERE updated_at IS NOT NULL AND updated_at < ?",
+                (cutoff_iso,),
+            ).rowcount
+            deleted_model_call = conn.execute(
+                "DELETE FROM model_call_stats WHERE updated_at IS NOT NULL AND updated_at < ?",
+                (cutoff_iso,),
+            ).rowcount
+            conn.commit()
+            vacuumed = 0
+            if self.auto_cleanup_vacuum:
+                try:
+                    conn.execute("VACUUM")
+                    vacuumed = 1
+                except Exception as e:
+                    logger.warning(f"[session_usage_stats] VACUUM 失败: {e}", exc_info=True)
+            self._last_cleanup_at = now_ts
+            logger.info(
+                f"[session_usage_stats] 自动清理完成 reason={reason}, cutoff={cutoff_iso}, "
+                f"usage={deleted_usage}, model_usage={deleted_model_usage}, model_call={deleted_model_call}, vacuum={vacuumed}"
+            )
+            return {
+                "deleted_usage": int(deleted_usage or 0),
+                "deleted_model_usage": int(deleted_model_usage or 0),
+                "deleted_model_call": int(deleted_model_call or 0),
+                "vacuumed": int(vacuumed),
+            }
+        finally:
+            conn.close()
 
     def _get_event_platform_name(self, event: AstrMessageEvent) -> str:
         meta = getattr(event, "platform_meta", None) or getattr(event, "_platform_meta", None)
