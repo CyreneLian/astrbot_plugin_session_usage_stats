@@ -57,7 +57,7 @@
 
 ### ⚠️ QQ / aiocqhttp 必开配置
 
-由于 QQ 平台的消息历史写入不够稳定，强烈建议在配置中启用事件捕获：
+由于 QQ 平台的消息历史写入不够 stable，强烈建议在配置中启用事件捕获：
 
 ```json
 {
@@ -76,17 +76,29 @@
 AstrBot/data/plugins/astrbot_plugin_session_usage_stats
 ```
 
-目录结构通常如下：
+目录结构如下：
 
 ```text
 astrbot_plugin_session_usage_stats/
-├── main.py
-├── metadata.yaml
-├── _conf_schema.json
-├── logo.png
+├── main.py              # 插件主入口：处理指令、生命周期与事件捕获分发
+├── core/
+│   ├── __init__.py
+│   ├── api.py           # Quart/Web API 路由处理器：向仪表盘提供数据接口
+│   ├── database.py      # SQLite 数据库管理器：线程池异步读写、查询与清理
+│   └── scanner.py       # 消息增量扫描器：异步补扫历史消息数据
+├── models/
+│   ├── __init__.py
+│   └── config.py        # 插件配置模型：定义并校验各配置项参数
+├── utils/
+│   ├── __init__.py
+│   └── decorators.py    # 数据库连接自动关闭等装饰器工具
+├── metadata.yaml        # 插件元数据：名称、版本、作者、描述等
+├── _conf_schema.json    # 插件配置页面 schema 定义
+├── logo.png             # 插件图标
+├── README.md            # 插件说明文档
 └── pages/
     └── stats/
-        └── index.html
+        └── index.html   # 网页仪表盘前端页面与图表渲染
 ```
 
 安装或更新后，请在 AstrBot 中重载插件，或直接重启 AstrBot。
@@ -349,221 +361,21 @@ pages/stats/index.html
 
 支持：
 
-- 搜索平台或会话 ID
-- 按 Token 排序
-- 按轮数排序
-- 再次点击当前排序项切换升序 / 降序
-- 最多显示 10 条，表格内部滚动查看更多
+- 搜索会话 ID
+- 各列双向排序
 
-### 🔄 刷新数据
+## 🤝 贡献与支持
 
-点击页面右上角“刷新”按钮，可以重新拉取当前周期数据。
+欢迎提交 Issue 和 Pull Request 来帮助改进本插件。
 
-### 🗑️ 清空数据
+## 📜 许可证
 
-点击“清空数据”按钮后，需要在短时间内再次点击确认。
+MIT License
 
-清空会删除：
+---
 
-- 会话统计数据
-- 模型统计数据
-- 模型调用缓存统计
+## 作者
 
-清空后插件会对自身统计库执行整理，并重新准备空白统计状态；自动清理旧数据则只会删除超过保留天数的统计数据，不会执行磁盘整理。
-
-## 📏 统计口径说明
-
-### 🔄 轮数
-
-轮数以 Bot 完成一次回复为锚点。
-
-也就是说，一轮通常表示：
-
-```text
-用户消息触发了一次完整 Bot 回复
-```
-
-这样可以避免只统计到用户消息、但 Bot 没有实际完成回复时造成数据虚高。
-
-### 🗣️ 用户消息数与 Bot 消息数
-
-用户消息数和 Bot 消息数不一定永远相等。
-
-可能出现差异的情况：
-
-- 用户连续发送多条消息
-- 用户中途打断
-- 消息没有触发 Bot 回复
-- 平台历史记录写入不完整
-- 旧数据来自不同统计口径
-
-当前插件会尽量以“完成回复”为核心口径，让统计更接近实际消耗。
-
-### 🪙 Token
-
-Token 分为：
-
-- 输入 Token：Prompt / 上下文消耗
-- 输出 Token：模型回复消耗
-- 总 Token：输入 Token + 输出 Token
-
-如果某些 Provider 或模型调用没有返回 Token 信息，相关 Token 可能为 0，但调用次数仍可能被记录。
-
-### 🪟 滚动窗口
-
-插件当前使用滚动窗口统计：
-
-- 今日 = 过去 24 小时
-- 本周 = 过去 7 天
-- 本月 = 过去 30 天
-
-不是自然日 0 点到 24 点，也不是自然周或自然月。
-
-## 💾 数据存储
-
-插件数据存储在插件数据目录下的 SQLite 数据库中：
-
-```text
-usage_stats.db
-```
-
-主要数据表包括：
-
-- `usage_stats`：会话维度统计
-- `model_usage_stats`：模型维度统计
-- `model_call_stats`：模型调用统计缓存 / 兼容数据
-- `scan_state`：扫描游标与清空时间
-
-通常不建议手动修改数据库。如果需要清空数据，请优先使用网页仪表盘中的“清空数据”。
-
-## 💡 推荐配置
-
-### 只统计 WebChat
-
-适合只使用 WebChat 的场景。
-
-```json
-{
-  "enabled_platforms": ["webchat"],
-  "include_threads": false,
-  "enable_event_capture": false
-}
-```
-
-### 统计 WebChat + QQ
-
-适合同时使用 WebChat 和 aiocqhttp 的场景。
-
-```json
-{
-  "enabled_platforms": ["webchat", "aiocqhttp"],
-  "enable_event_capture": true,
-  "event_capture_platforms": ["aiocqhttp"]
-}
-```
-
-### 开启自动扫描
-
-适合希望页面打开时更快看到数据的场景。
-
-```json
-{
-  "enable_auto_scan": true,
-  "auto_scan_interval_minutes": 5,
-  "scan_batch_size": 500
-}
-```
-
-如果消息量很大，可以适当调大扫描间隔，或降低单次扫描上限。
-
-## ❓ 常见问题
-
-### 1. 页面没有新数据
-
-可以尝试：
-
-```text
-会话统计 补扫
-```
-
-或点击网页仪表盘右上角“刷新”。
-
-如果刚刚修改过插件代码或配置，请重载插件或重启 AstrBot。
-
-### 2. QQ 数据没有统计出来
-
-请检查：
-
-- `enabled_platforms` 是否包含 `aiocqhttp`
-- `enable_event_capture` 是否开启
-- `event_capture_platforms` 是否包含 `aiocqhttp`
-- 插件是否已经重载
-
-QQ / aiocqhttp 等平台可能不稳定写入主历史库，建议开启事件捕获兜底。
-
-### 3. 用户消息数比 Bot 消息数多很多
-
-可能原因：
-
-- 用户连续发言
-- 群聊中普通消息没有触发 Bot 回复
-- 历史旧数据口径不同
-- 事件捕获或历史扫描配置不一致
-
-当前版本不会在收到用户消息时立即入库，而是在 Bot 完成回复后统一记录，以减少虚高。
-
-### 4. 清空后旧数据又出现
-
-当前版本已经使用 `clear_at` 机制避免清空后旧历史数据回流。
-
-如果仍出现异常，请确认：
-
-- 插件是否重载到最新版本
-- 是否存在多个插件副本
-- 是否手动恢复过旧数据库
-
-### 5. 模型名称显示 unknown
-
-可能原因：
-
-- Provider 没有暴露模型名称
-- 旧数据产生时还没有模型提取逻辑
-- 某些调用不是标准对话模型调用
-
-建议清空旧数据后，让新回复重新产生统计。
-
-### 6. 模型 Token 为 0
-
-部分调用可能没有 Token 信息，例如：
-
-- **嵌入 (Embedding)**：底层 API 接口（如 OpenAI 的 `/v1/embeddings`）在 AstrBot 适配器中设计为仅返回特征向量列表（`list[float]`），其内部没有将 API 响应中的 `usage` 结构（输入 token 数）向上传递或暴露给框架层，因而无法统计到具体的 Token 消耗。
-- **重排 (Rerank)**：底层重排序 API（如 Cohere 或阿里云百炼的 Rerank）在 AstrBot 适配器中仅解析并返回包含文档索引和相关性得分的 `RerankResult` 列表，同样没有将 Token 消耗信息传递出来，因此也无法记录 Token。
-- 某些工具模型
-- Provider 没返回 usage 字段
-
-这类数据可以切换到“次数”维度查看。
-
-### 7. 修改配置后没有生效
-
-请重载插件或重启 AstrBot。
-
-## 🛠 维护建议
-
-- 修改插件代码后，建议重载插件或重启 AstrBot。
-- 修改统计口径后，建议清空旧数据重新统计，避免新旧口径混在一起。
-- 大规模消息环境下，建议谨慎开启高频自动扫描。
-- 不建议手动编辑 `usage_stats.db`。
-- 如果需要备份统计数据，可以备份整个插件数据目录。
-
-## 🔖 版本信息
-
-- 插件名：`astrbot_plugin_session_usage_stats`
-- 显示名：模型用量统计
-- 作者：往昔的涟漪
-- 主要用途：统计全部模型的调用次数、Token 消耗与趋势变化，并保留会话维度用于定位消耗来源
-
-## ✉️ 联系方式
-
-- QQ: 1158026885
+- 往昔的涟漪
 
 ## 如果这个插件对你有帮助，欢迎给个 ⭐ Star！
