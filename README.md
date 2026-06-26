@@ -68,19 +68,11 @@
 
 否则 QQ 的统计可能出现"用户消息数 > Bot 消息数"或部分会话数据缺失。
 
-## 📦 安装方式
-
-将插件目录放入 AstrBot 插件目录：
-
-```text
-AstrBot/data/plugins/astrbot_plugin_session_usage_stats
-```
-
-目录结构如下：
+## 插件目录结构
 
 ```text
 astrbot_plugin_session_usage_stats/
-├── main.py              # 插件主入口：处理指令、生命周期与事件捕获分发
+├── main.py              # 插件主入口：处理指令注册、生命周期与事件捕获分发
 ├── core/
 │   ├── __init__.py
 │   ├── api.py           # Quart/Web API 路由处理器：向仪表盘提供数据接口
@@ -98,6 +90,7 @@ astrbot_plugin_session_usage_stats/
 ├── README.md            # 插件说明文档
 └── pages/
     └── stats/
+```
         └── index.html   # 网页仪表盘前端页面与图表渲染
 ```
 
