@@ -760,6 +760,150 @@ class SessionUsageStatsPlugin(Star):
                     )
             await self.db.run_async(run_upsert)
 
+    def _safe_attr(self, obj: Any, name: str) -> Any:
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            return obj.get(name)
+        try:
+            return getattr(obj, name, None)
+        except Exception:
+            return None
+
+    def _provider_stats_model_info(self, event: AstrMessageEvent | None = None, max_age_seconds: int = 600) -> tuple[str, str]:
+        if not event:
+            return "", ""
+        try:
+            umo = str(getattr(event, "unified_msg_origin", None) or "").strip()
+            if not umo:
+                return "", ""
+            db_path = self._resolve_main_db_path()
+            if not db_path:
+                return "", ""
+            conn = sqlite3.connect(str(db_path), timeout=5)
+            try:
+                row = conn.execute(
+                    """
+                    SELECT provider_model, provider_id, end_time, created_at
+                    FROM provider_stats
+                    WHERE umo=? AND status='completed'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (umo,),
+                ).fetchone()
+            finally:
+                conn.close()
+            if not row:
+                return "", ""
+            provider_model, provider_id, end_time, _created_at = row
+            try:
+                if end_time and abs(datetime.now().timestamp() - float(end_time)) > max_age_seconds:
+                    return "", ""
+            except Exception:
+                pass
+            return str(provider_model or "").strip()[:160], str(provider_id or "").strip()[:120]
+        except Exception as e:
+            logger.debug(f"[session_usage_stats] 从 provider_stats 提取模型信息失败: {e}", exc_info=True)
+            return "", ""
+
+    def _extract_event_model_info(self, response: LLMResponse, run_context: Any = None, event: AstrMessageEvent | None = None) -> tuple[str, str]:
+        model_keys = (
+            "model", "model_name", "model_id", "llm_model", "deployment",
+            "deployment_name", "engine"
+        )
+        provider_keys = ("provider", "provider_name", "provider_id", "provider_type", "platform", "type")
+
+        def pick(obj: Any, keys: tuple[str, ...]) -> str:
+            queue = [obj]
+            seen = set()
+            while queue:
+                cur = queue.pop(0)
+                if cur is None:
+                    continue
+                ident = id(cur)
+                if ident in seen:
+                    continue
+                seen.add(ident)
+                for k in keys:
+                    v = self._safe_attr(cur, k)
+                    if v and not isinstance(v, (dict, list, tuple, set)):
+                        text = str(v).strip()
+                        if text:
+                            return text
+                for child_key in (
+                    "raw_completion", "metadata", "meta", "raw", "extra", "response",
+                    "provider", "llm", "curr_llm", "using_provider", "context", "request", "req"
+                ):
+                    child = self._safe_attr(cur, child_key)
+                    if child is not None and not isinstance(child, (str, int, float, bool)):
+                        queue.append(child)
+            return ""
+
+        model_name = ""
+        provider_name = ""
+
+        try:
+            ps_model, ps_provider = self._provider_stats_model_info(event)
+            if ps_model:
+                model_name = ps_model
+            if ps_provider:
+                provider_name = ps_provider
+        except Exception:
+            pass
+
+        try:
+            recent = getattr(self, "_recent_chat_call_context", {}) or {}
+            ts = float(recent.get("ts") or 0)
+            if (not model_name or not provider_name) and ts and datetime.now().timestamp() - ts <= 30:
+                if not model_name:
+                    model_name = str(recent.get("model_name") or "").strip()
+                if not provider_name:
+                    provider_name = str(recent.get("provider_name") or "").strip()
+        except Exception:
+            pass
+
+        raw = getattr(response, "raw_completion", None)
+        model_name = model_name or pick(response, model_keys) or pick(run_context, model_keys)
+        if not model_name or model_name == "unknown":
+            model_name = self._pick_model_from_raw_completion(raw) or model_name
+        provider_name = provider_name or pick(response, provider_keys) or pick(run_context, provider_keys)
+
+        if not provider_name:
+            try:
+                mod = getattr(raw.__class__, "__module__", "") if raw else ""
+                if "openai" in mod:
+                    provider_name = "openai"
+                elif "google" in mod or "genai" in mod:
+                    provider_name = "gemini"
+                elif "anthropic" in mod:
+                    provider_name = "anthropic"
+            except Exception:
+                pass
+
+        if model_name and self._is_generic_provider_name(provider_name):
+            resolved_provider = self._provider_name_from_config_model(model_name, provider_name)
+            if resolved_provider:
+                provider_name = resolved_provider
+
+        if not model_name or self._is_generic_provider_name(provider_name):
+            try:
+                umo = getattr(event, "unified_msg_origin", None) if event else None
+                provider = self.context.get_using_provider(umo=umo)
+                if provider:
+                    fallback_model, fallback_provider = self._provider_display_name(provider)
+                    if not model_name:
+                        getter = getattr(provider, "get_model", None)
+                        model_name = str((getter() if callable(getter) else fallback_model) or "").strip()
+                    if self._is_generic_provider_name(provider_name):
+                        provider_name = fallback_provider
+            except Exception:
+                pass
+
+        if model_name == provider_name and provider_name != "unknown":
+            provider_name = "unknown"
+        return str(model_name or "unknown")[:160], str(provider_name or "unknown")[:120]
+
     def _provider_display_name(self, provider: Any) -> tuple[str, str]:
         pname = "unknown"
         mname = "unknown"
