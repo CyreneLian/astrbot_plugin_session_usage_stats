@@ -699,13 +699,13 @@ class SessionUsageStatsPlugin(Star):
         if not session_id or session_id == "unknown":
             return None
         try:
-            created_at = event.message_obj.timestamp if event.message_obj and getattr(event.message_obj, "timestamp", None) else datetime.now()
+            created_at = event.message_obj.timestamp if event.message_obj and getattr(event.message_obj, "timestamp", None) else datetime.now().timestamp()
             if isinstance(created_at, (int, float)):
-                created_at = datetime.fromtimestamp(created_at)
+                created_at = datetime.fromtimestamp(created_at, timezone.utc)
         except Exception:
-            created_at = datetime.now()
+            created_at = datetime.now(timezone.utc)
         if not isinstance(created_at, datetime):
-            created_at = datetime.now()
+            created_at = datetime.now(timezone.utc)
         return str(platform_id), str(session_id), created_at
 
     @filter.event_message_type(EventMessageType.PRIVATE_MESSAGE | EventMessageType.GROUP_MESSAGE)
@@ -1262,22 +1262,28 @@ class SessionUsageStatsPlugin(Star):
 
     def _normalize_datetime(self, value: Any) -> datetime:
         if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
             return value
         if value is None:
-            return datetime.now()
+            return datetime.now(timezone.utc)
         if isinstance(value, (int, float)):
-            return datetime.fromtimestamp(value)
+            return datetime.fromtimestamp(value, timezone.utc)
         text = str(value).strip()
         text = text.replace("Z", "+00:00")
         try:
-            return datetime.fromisoformat(text)
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
         except Exception:
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
                 try:
-                    return datetime.strptime(text, fmt)
+                    dt = datetime.strptime(text, fmt)
+                    return dt.replace(tzinfo=timezone.utc)
                 except Exception:
                     pass
-        return datetime.now()
+        return datetime.now(timezone.utc)
 
     def _extract_token_usage(self, content: dict[str, Any]) -> tuple[int, int, int]:
         agent_stats = content.get("agent_stats") or {}
