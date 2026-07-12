@@ -109,6 +109,10 @@ class MessageScanner:
                             if msg_type != "bot":
                                 continue
 
+                            # 过滤掉没有 agent_stats 的中间/工具调用消息，避免重复计算轮数和 Token
+                            if "agent_stats" not in content:
+                                continue
+
                             input_tokens, output_tokens, total_tokens = self.plugin._extract_token_usage(content)
                             bucket_keys = self.plugin._build_bucket_keys(created_at)
 

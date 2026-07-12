@@ -79,7 +79,7 @@ class SessionUsageStatsPlugin(Star):
 
         if self.include_threads and "webchat_thread" not in self.enabled_platforms:
             self.enabled_platforms.append("webchat_thread")
-        self._effective_platforms = set(map(str, self.enabled_platforms)) | set(map(str, self.event_capture_platforms))
+        self._effective_platforms = set(map(str, self.event_capture_platforms))
 
         self._scan_lock = asyncio.Lock()
         self._last_query_scan_ts = 0.0
