@@ -1,5 +1,5 @@
 """
-AstrBot 模型用量统计插件 v2.11
+AstrBot 模型用量统计插件 v2.11.0
 
 功能描述：
 - 统计全部模型的调用次数、Token 消耗和趋势排行
@@ -7,7 +7,7 @@ AstrBot 模型用量统计插件 v2.11
 - 支持低开销增量扫描与自动清理
 
 作者: 往昔的涟漪
-版本: 2.11
+版本: 2.11.0
 日期: 2026-06-26
 """
 
@@ -42,7 +42,7 @@ from .core.api import ApiHandler
     "astrbot_plugin_session_usage_stats",
     "OpenAI",
     "统计全部模型的调用次数、Token 消耗和趋势排行",
-    "2.11",
+    "2.11.0",
     "",
 )
 class SessionUsageStatsPlugin(Star):
