@@ -7,12 +7,12 @@ from typing import List, Dict, Any
 @dataclass
 class SessionUsageStatsConfig:
     """插件配置模型"""
-    enable_auto_scan: bool = False
+    enable_auto_scan: bool = True
     auto_scan_interval_minutes: int = 5
     scan_batch_size: int = 500
-    enabled_platforms: List[str] = field(default_factory=lambda: ["webchat", "aiocqhttp"])
+    enabled_platforms: List[str] = field(default_factory=lambda: ["webchat"])
     include_threads: bool = False
-    enable_event_capture: bool = False
+    enable_event_capture: bool = True
     event_capture_platforms: List[str] = field(default_factory=lambda: ["aiocqhttp"])
     auto_cleanup_enabled: bool = True
     auto_cleanup_retention_days: int = 365
@@ -22,12 +22,12 @@ class SessionUsageStatsConfig:
     def from_dict(cls, config: Dict[str, Any]) -> "SessionUsageStatsConfig":
         """从字典创建配置实例"""
         return cls(
-            enable_auto_scan=bool(config.get("enable_auto_scan", False)),
+            enable_auto_scan=bool(config.get("enable_auto_scan", True)),
             auto_scan_interval_minutes=int(config.get("auto_scan_interval_minutes", 5) or 5),
             scan_batch_size=int(config.get("scan_batch_size", 500) or 500),
-            enabled_platforms=list(config.get("enabled_platforms", ["webchat", "aiocqhttp"]) or ["webchat", "aiocqhttp"]),
+            enabled_platforms=list(config.get("enabled_platforms", ["webchat"]) or ["webchat"]),
             include_threads=bool(config.get("include_threads", False)),
-            enable_event_capture=bool(config.get("enable_event_capture", False)),
+            enable_event_capture=bool(config.get("enable_event_capture", True)),
             event_capture_platforms=list(config.get("event_capture_platforms", ["aiocqhttp"]) or ["aiocqhttp"]),
             auto_cleanup_enabled=bool(config.get("auto_cleanup_enabled", True)),
             auto_cleanup_retention_days=int(config.get("auto_cleanup_retention_days", 365) or 365),

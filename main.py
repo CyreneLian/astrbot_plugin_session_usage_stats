@@ -1,5 +1,5 @@
 """
-AstrBot 模型用量统计插件 v2.1.2
+AstrBot 模型用量统计插件 v2.1.3
 
 功能描述：
 - 统计全部模型的调用次数、Token 消耗和趋势排行
@@ -7,8 +7,8 @@ AstrBot 模型用量统计插件 v2.1.2
 - 支持低开销增量扫描与自动清理
 
 作者: 往昔的涟漪
-版本: 2.1.2
-日期: 2026-06-26
+版本: 2.1.3
+日期: 2026-08-05
 """
 
 import asyncio
@@ -40,9 +40,9 @@ from .core.api import ApiHandler
 
 @register(
     "astrbot_plugin_session_usage_stats",
-    "OpenAI",
+    "往昔的涟漪",
     "统计全部模型的调用次数、Token 消耗和趋势排行",
-    "2.1.2",
+    "2.1.4",
     "",
 )
 class SessionUsageStatsPlugin(Star):
@@ -728,6 +728,7 @@ class SessionUsageStatsPlugin(Star):
 
     @filter.event_message_type(EventMessageType.PRIVATE_MESSAGE | EventMessageType.GROUP_MESSAGE)
     async def capture_user_message(self, event: AstrMessageEvent):
+        """捕获用户发送的消息，用于确认会话活跃度（预留，当前统计逻辑由 Bot 回复驱动）"""
         return
 
     @filter.on_agent_done()
@@ -737,6 +738,7 @@ class SessionUsageStatsPlugin(Star):
         run_context: "ContextWrapper[AstrAgentContext]",
         response: LLMResponse,
     ):
+        """捕获 Bot 回复并统计会话用量与 Token 消耗"""
         if not self.enable_event_capture:
             return
         if not response or getattr(response, "role", None) != "assistant":
@@ -1392,6 +1394,7 @@ class SessionUsageStatsPlugin(Star):
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("会话统计模式")
     async def session_usage_stats_mode(self, event: AstrMessageEvent):
+        """查看当前会话统计的运行模式与相关配置（需管理员权限）"""
         mode_text = "实时事件捕获" if self.enable_event_capture else "定时增量扫描"
         lines = [
             "会话统计当前模式",
@@ -1405,6 +1408,7 @@ class SessionUsageStatsPlugin(Star):
 
     @filter.command("会话统计")
     async def session_usage_stats(self, event: AstrMessageEvent):
+        """查询当前会话的用量统计（今日 / 本周 / 本月 / 模式 / 补扫）"""
         args = event.message_str.strip().split()
         sub = args[1].strip() if len(args) >= 2 else "今日"
         if sub in {"今日", "本周", "本月"}:
@@ -1467,6 +1471,7 @@ class SessionUsageStatsPlugin(Star):
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("会话统计诊断")
     async def session_usage_stats_diag(self, event: AstrMessageEvent):
+        """诊断模型用量统计插件运行状态，查看 Provider 包装与模型调用记录情况（需管理员权限）"""
         stats = self._wrap_model_call_providers()
         
         def run_diag():
@@ -1503,6 +1508,7 @@ class SessionUsageStatsPlugin(Star):
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("会话统计全部")
     async def session_usage_stats_all(self, event: AstrMessageEvent):
+        """查询所有会话的用量统计汇总（需管理员权限，支持今日 / 本周 / 本月）"""
         args = event.message_str.strip().split()
         sub = args[1].strip() if len(args) >= 2 else "今日"
         if sub not in {"今日", "本周", "本月"}:
