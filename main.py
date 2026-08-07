@@ -1,5 +1,5 @@
 """
-AstrBot 模型用量统计插件 v2.1.3
+AstrBot 模型用量统计插件 v2.1.5
 
 功能描述：
 - 统计全部模型的调用次数、Token 消耗和趋势排行
@@ -7,8 +7,8 @@ AstrBot 模型用量统计插件 v2.1.3
 - 支持低开销增量扫描与自动清理
 
 作者: 往昔的涟漪
-版本: 2.1.3
-日期: 2026-08-05
+版本: 2.1.5
+日期: 2026-08-07
 """
 
 import asyncio
@@ -42,8 +42,8 @@ from .core.api import ApiHandler
     "astrbot_plugin_session_usage_stats",
     "往昔的涟漪",
     "统计全部模型的调用次数、Token 消耗和趋势排行",
-    "2.1.4",
-    "",
+    "2.1.5",
+    "https://github.com/CyreneLian/astrbot_plugin_session_usage_stats",
 )
 class SessionUsageStatsPlugin(Star):
     """模型用量统计插件主类"""
