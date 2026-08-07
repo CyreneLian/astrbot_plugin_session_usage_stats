@@ -72,7 +72,7 @@ astrbot_plugin_session_usage_stats/
 | `enable_auto_scan` | 是否开启自动扫描 | `true` |
 | `auto_scan_interval_minutes` | 自动扫描间隔（分钟） | `5` |
 | `scan_batch_size` | 单次扫描最大消息数 | `500` |
-| `enabled_platforms` | 启用历史扫描的平台 ID 列表 | `["webchat", "aiocqhttp"]` |
+| `enabled_platforms` | 启用历史扫描的平台 ID 列表 | `["webchat"]` |
 | `include_threads` | 是否统计 `webchat_thread` | `false` |
 | `enable_event_capture` | 是否启用事件钩子捕获 | `true` |
 | `event_capture_platforms` | 事件钩子捕获的平台列表 | `["aiocqhttp"]` |
@@ -88,7 +88,7 @@ astrbot_plugin_session_usage_stats/
 | `会话统计 本月` | 查看当前会话过去 30 天的用量统计 |
 | `会话统计 模式` | 查看当前自动扫描、扫描间隔、单次上限、平台与事件捕获状态 |
 | `会话统计 补扫` / `重扫` | 手动触发增量扫描，返回处理消息数、会话数与最新游标 |
-| `会话统计全部 今日` / `本周` / `本月` | （仅管理员）查看全站过去 24 小时 / 7 天 / 30 天的汇总统计 |
+| `会话统计全部 今日` / `本周` / `本月` | 查看全站过去 24 小时 / 7 天 / 30 天的汇总统计 |
 
 > **提示**：这里的“今日 / 本周 / 本月”均指滚动时间窗口（过去 24小时 / 7天 / 30天），非自然日 / 周 / 月。
 
@@ -108,10 +108,6 @@ astrbot_plugin_session_usage_stats/
 
 欢迎提交 Issue 和 Pull Request 来帮助改进本插件。
 
-## 📜 许可证
-
-MIT License
-
 ---
 
 ## 作者
@@ -121,5 +117,9 @@ MIT License
 ## 联系方式
 
 - QQ: 1158026885
+
+## 仓库地址
+
+[https://github.com/CyreneLian/astrbot_plugin_session_usage_stats](https://github.com/CyreneLian/astrbot_plugin_session_usage_stats)
 
 ## 如果这个插件对你有帮助，欢迎给个 ⭐ Star！

@@ -1,5 +1,14 @@
 # 📊 astrbot_plugin_session_usage_stats CHANGELOG
 
+## 🌸 v2.1.4 (2026-08-07)
+
+- **补全插件行为描述**：为所有指令（会话统计、会话统计模式、会话统计诊断、会话统计全部）、事件监听器（capture_user_message）和钩子（capture_bot_response）补充了完整的文档字符串描述。
+
+## 🌸 v2.1.3 (2026-08-05)
+
+- **配置默认值更新**：更新了默认配置 models/config.py、配置 Schema _conf_schema.json。
+- **文档说明微调**：修正并补齐了 README 配置说明表格中的默认值描述。
+
 ## 🌸 v2.1.2 (2026-08-03)
 
 - 美化了插件文档、增加了几个未知的统计bug并和昔涟聊了一会天。
