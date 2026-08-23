@@ -1,5 +1,5 @@
 """
-AstrBot 模型用量统计插件 v2.1.5
+AstrBot 模型用量统计插件 v2.1.6
 
 功能描述：
 - 统计全部模型的调用次数、Token 消耗和趋势排行
@@ -7,7 +7,7 @@ AstrBot 模型用量统计插件 v2.1.5
 - 支持低开销增量扫描与自动清理
 
 作者: 往昔的涟漪
-版本: 2.1.5
+版本: 2.1.6
 日期: 2026-08-07
 """
 
@@ -42,7 +42,7 @@ from .core.api import ApiHandler
     "astrbot_plugin_session_usage_stats",
     "往昔的涟漪",
     "统计全部模型的调用次数、Token 消耗和趋势排行",
-    "2.1.5",
+    "2.1.6",
     "https://github.com/CyreneLian/astrbot_plugin_session_usage_stats",
 )
 class SessionUsageStatsPlugin(Star):
@@ -1406,6 +1406,7 @@ class SessionUsageStatsPlugin(Star):
         ]
         yield event.plain_result("\n".join(lines))
 
+    @filter.permission_type(PermissionType.ADMIN)
     @filter.command("会话统计")
     async def session_usage_stats(self, event: AstrMessageEvent):
         """查询当前会话的用量统计（今日 / 本周 / 本月 / 模式 / 补扫）"""
@@ -1448,11 +1449,13 @@ class SessionUsageStatsPlugin(Star):
             return
 
         if sub == "模式":
+            # 权限由「会话统计」指令的框架权限控制（命令管理可调节）
             async for res in self.session_usage_stats_mode(event):
                 yield res
             return
 
         if sub in {"补扫", "重扫"}:
+            # 权限由「会话统计」指令的框架权限控制（命令管理可调节）
             result = await self.scan_incremental(reason="manual_command")
             yield event.plain_result(
                 "补扫完成\n"
@@ -1463,7 +1466,7 @@ class SessionUsageStatsPlugin(Star):
             return
 
         if sub == "全部":
-            yield event.plain_result("权限不足，该指令仅管理员可用")
+            yield event.plain_result("请使用『会话统计全部』指令查看全站统计")
             return
 
         yield event.plain_result("用法：会话统计 今日(过去24小时) / 本周(过去7天) / 本月(过去30天) / 模式 / 补扫 / 全部（管理员）")
