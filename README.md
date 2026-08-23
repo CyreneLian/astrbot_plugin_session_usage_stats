@@ -67,17 +67,17 @@ astrbot_plugin_session_usage_stats/
 
 ## ⚙️ 配置说明
 
-| 字段 | 说明 | 默认值 |
-| --- | --- | --- |
-| `enable_auto_scan` | 是否开启自动扫描 | `true` |
-| `auto_scan_interval_minutes` | 自动扫描间隔（分钟） | `5` |
-| `scan_batch_size` | 单次扫描最大消息数 | `500` |
-| `enabled_platforms` | 启用历史扫描的平台 ID 列表 | `["webchat"]` |
-| `include_threads` | 是否统计 `webchat_thread` | `false` |
-| `enable_event_capture` | 是否启用事件钩子捕获 | `true` |
-| `event_capture_platforms` | 事件钩子捕获的平台列表 | `["aiocqhttp"]` |
-| `auto_cleanup_enabled` | 是否开启自动清理旧统计数据 | `true` |
-| `auto_cleanup_retention_days` | 统计数据全量保留天数 | `365` |
+| 配置项 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `enable_auto_scan` | bool | `true` | **是否开启自动扫描**（开启后每隔指定间隔自动增量扫描历史消息；关闭则仅在查询时补扫） |
+| `auto_scan_interval_minutes` | int | `5` | **自动扫描间隔（分钟）**（仅在开启自动扫描时生效。设定增量扫描任务的执行间隔） |
+| `scan_batch_size` | int | `500` | **单次扫描最大消息数**（防止单次扫描处理过多消息） |
+| `enabled_platforms` | list | `["webchat"]` | **历史消息扫描的平台列表**（启用历史消息扫描的平台列表，适用于webchat等写历史表的平台，默认webchat） |
+| `include_threads` | bool | `false` | **是否统计网页端线程对话**（开启后，网页端创建的「子线程对话」也会纳入用量统计；关闭则仅统计普通网页对话） |
+| `enable_event_capture` | bool | `true` | **是否启用事件钩子捕获**（开启后，事件钩子会实时捕获消息并写库，适用于QQ等不写历史表的平台） |
+| `event_capture_platforms` | list | `["aiocqhttp"]` | **事件钩子捕获的平台列表**（启用事件钩子捕获的平台列表，默认 aiocqhttp（QQ）） |
+| `auto_cleanup_enabled` | bool | `true` | **是否开启自动清理旧统计数据**（开启后会在启动时及自动扫描后，删除超过保留天数的全量桶数据（日/周/月）。注意：为了精简数据库大小，超过 30 天的小时桶（hour）数据为系统固定自动清理，不受此开关影响） |
+| `auto_cleanup_retention_days` | int | `365` | **全量统计数据保留天数**（仅影响插件自身数据库中的全量数据（日/周/月总账桶），开启自动清理旧统计数据后超过此天数的数据将被彻底清除） |
 
 ## 💬 聊天指令
 
@@ -88,6 +88,7 @@ astrbot_plugin_session_usage_stats/
 | `会话统计 本月` | 查看当前会话过去 30 天的用量统计 |
 | `会话统计 模式` | 查看当前自动扫描、扫描间隔、单次上限、平台与事件捕获状态 |
 | `会话统计 补扫` / `重扫` | 手动触发增量扫描，返回处理消息数、会话数与最新游标 |
+| `会话统计诊断` | 查看 Provider 包装与模型调用记录情况，排查统计异常（需管理员权限） |
 | `会话统计全部 今日` / `本周` / `本月` | 查看全站过去 24 小时 / 7 天 / 30 天的汇总统计 |
 
 > **提示**：这里的“今日 / 本周 / 本月”均指滚动时间窗口（过去 24小时 / 7天 / 30天），非自然日 / 周 / 月。
