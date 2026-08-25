@@ -1,60 +1,95 @@
 {
-  "enable_auto_scan": {
-    "description": "是否开启自动扫描",
-    "type": "bool",
-    "hint": "开启后每隔指定间隔自动增量扫描历史消息；关闭则仅在查询时补扫。",
-    "default": true
+  "用量统计设置": {
+    "description": "用量统计设置",
+    "hint": "统计范围、扫描与事件捕获、自动清理等相关配置。",
+    "type": "object",
+    "items": {
+      "auto_scan_interval_minutes": {
+        "description": "自动扫描间隔（分钟）",
+        "type": "int",
+        "hint": "设定增量扫描任务的执行间隔。",
+        "default": 5
+      },
+      "scan_batch_size": {
+        "description": "单次扫描最大消息数",
+        "type": "int",
+        "hint": "防止单次扫描处理过多消息。",
+        "default": 500
+      },
+      "enabled_platforms": {
+        "description": "历史消息扫描的平台列表",
+        "type": "list",
+        "hint": "启用历史消息扫描的平台列表，适用于webchat等写历史表的平台，默认webchat。",
+        "default": [
+          "webchat"
+        ]
+      },
+      "include_threads": {
+        "description": "是否统计网页端线程对话",
+        "type": "bool",
+        "hint": "开启后，网页端创建的「子线程对话」也会纳入用量统计；关闭则仅统计普通网页对话。",
+        "default": false
+      },
+      "event_capture_platforms": {
+        "description": "事件钩子捕获的平台列表",
+        "type": "list",
+        "hint": "启用事件钩子捕获的平台列表，默认 aiocqhttp（QQ）。",
+        "default": [
+          "aiocqhttp"
+        ]
+      },
+      "auto_cleanup_enabled": {
+        "description": "是否开启自动清理旧统计数据",
+        "type": "bool",
+        "hint": "开启后每隔1小时会删除超过保留天数的全量桶数据（日/周/月）。注意：为了精简数据库大小，超过 30 天的小时桶（hour）数据为系统固定自动清理，不受此开关影响。",
+        "default": true
+      },
+      "auto_cleanup_retention_days": {
+        "description": "全量统计数据保留天数",
+        "type": "int",
+        "hint": "仅影响插件自身数据库中的全量数据（日/周/月总账桶），开启自动清理旧统计数据后超过此天数的数据将被彻底清除。",
+        "default": 365
+      }
+    }
   },
-  "auto_scan_interval_minutes": {
-    "description": "自动扫描间隔（分钟）",
-    "type": "int",
-    "hint": "仅在开启自动扫描时生效。设定增量扫描任务的执行间隔。",
-    "default": 5
-  },
-  "scan_batch_size": {
-    "description": "单次扫描最大消息数",
-    "type": "int",
-    "hint": "防止单次扫描处理过多消息。",
-    "default": 500
-  },
-  "enabled_platforms": {
-    "description": "历史消息扫描的平台列表",
-    "type": "list",
-    "hint": "启用历史消息扫描的平台列表，适用于webchat等写历史表的平台，默认webchat。",
-    "default": [
-      "webchat"
-    ]
-  },
-  "include_threads": {
-    "description": "是否统计网页端线程对话",
-    "type": "bool",
-    "hint": "开启后，网页端创建的「子线程对话」也会纳入用量统计；关闭则仅统计普通网页对话。",
-    "default": false
-  },
-  "enable_event_capture": {
-    "description": "是否启用事件钩子捕获",
-    "type": "bool",
-    "hint": "开启后，事件钩子会实时捕获消息并写库，适用于QQ等不写历史表的平台。",
-    "default": true
-  },
-  "event_capture_platforms": {
-    "description": "事件钩子捕获的平台列表",
-    "type": "list",
-    "hint": "启用事件钩子捕获的平台列表，默认 aiocqhttp（QQ）。",
-    "default": [
-      "aiocqhttp"
-    ]
-  },
-  "auto_cleanup_enabled": {
-    "description": "是否开启自动清理旧统计数据",
-    "type": "bool",
-    "hint": "开启后会在启动时及自动扫描后，删除超过保留天数的全量桶数据（日/周/月）。注意：为了精简数据库大小，超过 30 天的小时桶（hour）数据为系统固定自动清理，不受此开关影响。",
-    "default": true
-  },
-  "auto_cleanup_retention_days": {
-    "description": "全量统计数据保留天数",
-    "type": "int",
-    "hint": "仅影响插件自身数据库中的全量数据（日/周/月总账桶），开启自动清理旧统计数据后超过此天数的数据将被彻底清除。",
-    "default": 365
+  "用量告警设置": {
+    "description": "用量告警设置",
+    "hint": "每日 Token 用量超限时向指定 QQ 发送告警的相关配置。",
+    "type": "object",
+    "items": {
+      "alert_enabled": {
+        "description": "是否启用用量告警",
+        "type": "bool",
+        "hint": "开启后，每日 Token 用量超过阈值时会向指定 QQ 发送告警消息。",
+        "default": false
+      },
+      "alert_daily_token_threshold": {
+        "description": "全局每日 Token 告警阈值",
+        "type": "int",
+        "hint": "填 0 不启用。当日所有会话累计 Token 超过此值时触发全局告警。",
+        "default": 0
+      },
+      "alert_session_token_threshold": {
+        "description": "单会话每日 Token 告警阈值",
+        "type": "int",
+        "hint": "填 0 不启用。单个会话当日 Token 超过此值时触发单会话告警。",
+        "default": 0
+      },
+      "alert_target_id": {
+        "description": "告警接收目标",
+        "hint": "支持多个目标，私聊接收的QQ 号直接填，群聊接收的群号需加 g: 前缀（如 g:12345678）。",
+        "type": "list",
+        "default": [],
+        "items": {
+          "type": "string"
+        }
+      },
+      "alert_check_interval_minutes": {
+        "description": "告警检查间隔（分钟）",
+        "type": "int",
+        "hint": "每隔多少分钟检查一次用量是否超限。",
+        "default": 30
+      }
+    }
   }
 }
