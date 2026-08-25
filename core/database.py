@@ -113,6 +113,105 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def get_provider_stats_cursor(self) -> int:
+        """获取主库 provider_stats 增量同步游标（同步，供外部线程池调用）"""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            row = conn.execute(
+                "SELECT last_message_id FROM scan_state WHERE state_key = ?",
+                ("provider_stats_cursor",),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+    def is_notice_seen(self) -> bool:
+        """查询升级提示是否已确认过（服务端存储，不受浏览器沙箱影响）"""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM scan_state WHERE state_key = ?",
+                ("notice_seen",),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    def set_notice_seen(self):
+        """标记升级提示已确认"""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            now = datetime.now().isoformat(timespec="seconds")
+            conn.execute(
+                """
+                INSERT INTO scan_state(state_key, last_message_id, last_scan_at, clear_at)
+                VALUES (?, ?, ?, NULL)
+                ON CONFLICT(state_key) DO UPDATE SET
+                    last_scan_at=excluded.last_scan_at
+                """,
+                ("notice_seen", 0, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_alert_sent_state(self) -> dict:
+        """获取告警冷却记录（持久化，避免重载时丢失导致重复发送）"""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            row = conn.execute(
+                "SELECT last_scan_at FROM scan_state WHERE state_key = ?",
+                ("alert_sent_state",),
+            ).fetchone()
+            if row and row[0]:
+                import json
+                try:
+                    return json.loads(row[0])
+                except Exception:
+                    return {}
+            return {}
+        finally:
+            conn.close()
+
+    def set_alert_sent_state(self, state: dict):
+        """保存告警冷却记录（持久化，避免重载时丢失导致重复发送）"""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            import json
+            now = datetime.now().isoformat(timespec="seconds")
+            state_json = json.dumps(state, ensure_ascii=False)
+            conn.execute(
+                """
+                INSERT INTO scan_state(state_key, last_message_id, last_scan_at, clear_at)
+                VALUES (?, ?, ?, NULL)
+                ON CONFLICT(state_key) DO UPDATE SET
+                    last_scan_at=excluded.last_scan_at
+                """,
+                ("alert_sent_state", 0, state_json),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def set_provider_stats_cursor(self, cursor_id: int):
+        """设置主库 provider_stats 增量同步游标（同步，供外部线程池调用）"""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            now = datetime.now().isoformat(timespec="seconds")
+            conn.execute(
+                """
+                INSERT INTO scan_state(state_key, last_message_id, last_scan_at, clear_at)
+                VALUES (?, ?, ?, NULL)
+                ON CONFLICT(state_key) DO UPDATE SET
+                    last_message_id=excluded.last_message_id,
+                    last_scan_at=excluded.last_scan_at
+                """,
+                ("provider_stats_cursor", int(cursor_id), now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def get_last_message_id(self) -> int:
         """获取最后一次增量扫描的消息 ID (同步，供外部线程池调用)"""
         conn = sqlite3.connect(self.db_path, timeout=10)
@@ -221,6 +320,48 @@ class DatabaseManager:
                     output_inc,
                     total_inc,
                     now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def deduct_model_call_row(
+        self,
+        model_name: str,
+        provider_name: str,
+        bucket_type: str,
+        bucket_key: str,
+        call_dec: int,
+        input_dec: int,
+        output_dec: int,
+        total_dec: int,
+    ):
+        """从 model_call_stats 扣减对话调用（数据层扣减，防止 wrapper 抓到的对话调用与主库重复）。
+
+        正常对话调用会同时被 AstrBot 主库 provider_stats 记录（权威），
+        同步对话模型时按 (模型, Provider, 桶) 从 model_call_stats 扣减，
+        让 model_call_stats 只保留主库未覆盖的纯后台差额（插件直连/嵌入/重排）。
+        """
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            conn.execute(
+                """
+                UPDATE model_call_stats SET
+                    call_count = MAX(0, call_count - ?),
+                    input_tokens = MAX(0, input_tokens - ?),
+                    output_tokens = MAX(0, output_tokens - ?),
+                    total_tokens = MAX(0, total_tokens - ?),
+                    updated_at = ?
+                WHERE platform_id='system' AND session_id='__background__'
+                  AND bucket_type=? AND bucket_key=?
+                  AND model_name=? AND provider_name=?
+                """,
+                (
+                    int(call_dec), int(input_dec), int(output_dec), int(total_dec),
+                    datetime.now().isoformat(timespec="seconds"),
+                    bucket_type, bucket_key,
+                    model_name, provider_name,
                 ),
             )
             conn.commit()
@@ -404,7 +545,6 @@ class DatabaseManager:
         self,
         cutoff_30d_iso: str,
         cutoff_retention_iso: str | None,
-        auto_cleanup_vacuum: bool,
     ) -> Dict[str, int]:
         conn = sqlite3.connect(self.db_path, timeout=10)
         try:
@@ -443,19 +583,11 @@ class DatabaseManager:
                 ).rowcount
 
             conn.commit()
-            vacuumed = 0
-            if auto_cleanup_vacuum:
-                try:
-                    conn.execute("VACUUM")
-                    vacuumed = 1
-                except Exception as e:
-                    logger.warning(f"[session_usage_stats] VACUUM 失败: {e}", exc_info=True)
-
             return {
                 "deleted_usage": int((deleted_usage_hour or 0) + (deleted_usage_full or 0)),
                 "deleted_model_usage": int((deleted_model_usage_hour or 0) + (deleted_model_usage_full or 0)),
                 "deleted_model_call": int((deleted_model_call_hour or 0) + (deleted_model_call_full or 0)),
-                "vacuumed": int(vacuumed),
+                "vacuumed": 0,
             }
         finally:
             conn.close()
