@@ -1,8 +1,8 @@
 name: astrbot_plugin_session_usage_stats
-display_name: 模型用量统计
-desc: 统计 AstrBot 全部模型在过去 24小时 / 7天 / 30天 / 1年 / 全部历史内的调用次数与 Token 消耗，提供美观的可视化仪表盘、趋势概览、模型/平台占比、Top 会话排行与明细表格，支持 30天小时桶精简与双层自动清理。
-help: 打开插件管理页查看“模型用量统计”仪表盘；也可发送“会话统计 今日 / 本周 / 本月 / 模式 / 补扫”查看兼容的会话统计命令。
-version: 2.1.6
+display_name: 模型用量统计与告警
+desc: 统计 AstrBot 全部模型在过去 24小时 / 7天 / 30天 / 1年 / 全部历史内的调用次数与 Token 消耗，提供美观的可视化仪表盘、趋势概览、模型/平台占比、Top 会话排行与明细表格，内置30天小时桶精简与双层自动清理并支持每日用量告警。
+help: 打开插件管理页查看“模型用量统计与告警”仪表盘；也可发送“会话统计 今日 / 本周 / 本月 / 模式 / 补扫”查看兼容的会话统计命令。
+version: 2.2.0
 astrbot_version: ">=4.26"
 author: 往昔的涟漪
 repo: "https://github.com/CyreneLian/astrbot_plugin_session_usage_stats"
