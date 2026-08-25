@@ -1,5 +1,5 @@
 """
-AstrBot 模型用量统计插件 v2.1.6
+AstrBot 模型用量统计插件 v2.2.0
 
 功能描述：
 - 统计全部模型的调用次数、Token 消耗和趋势排行
@@ -7,7 +7,7 @@ AstrBot 模型用量统计插件 v2.1.6
 - 支持低开销增量扫描与自动清理
 
 作者: 往昔的涟漪
-版本: 2.1.6
+版本: 2.2.0
 日期: 2026-08-07
 """
 
@@ -27,7 +27,6 @@ from astrbot.api.provider import LLMResponse
 from astrbot.core.provider.entities import TokenUsage
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
-from astrbot.core.star.filter.event_message_type import EventMessageType
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
@@ -41,14 +40,29 @@ from .core.api import ApiHandler
 @register(
     "astrbot_plugin_session_usage_stats",
     "往昔的涟漪",
-    "统计全部模型的调用次数、Token 消耗和趋势排行",
-    "2.1.6",
+    "统计全部模型调用次数、Token 消耗与趋势排行，支持每日用量告警推送",
+    "2.2.0",
     "https://github.com/CyreneLian/astrbot_plugin_session_usage_stats",
 )
 class SessionUsageStatsPlugin(Star):
     """模型用量统计插件主类"""
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+        # 兼容分组配置（用量统计设置 / 用量告警设置）：
+        # 将各分组内的配置项摊平到顶层，便于各处按原键名读取，同时兼容旧的扁平配置。
+        # 注意：必须通过「创建新字典」合并，绝不能修改传入的 config 对象本身，
+        # 否则会污染 AstrBot 共享的 AstrBotConfig 实例，导致配置面板渲染出多余的扁平配置项。
+        _meta_keys = {"type", "description", "hint", "obvious_hint", "items", "default", "options", "slider"}
+        _flattened = {}
+        for _group_val in list((config or {}).values()):
+            if isinstance(_group_val, dict):
+                _items = _group_val.get("items") if isinstance(_group_val.get("items"), dict) else _group_val
+                if isinstance(_items, dict):
+                    for _k, _v in _items.items():
+                        if _k not in _meta_keys:
+                            _flattened[_k] = _v
+        if _flattened:
+            config = {**(config or {}), **_flattened}
         # 1. 初始化配置模型
         self.plugin_config = SessionUsageStatsConfig.from_dict(config or {})
         try:
@@ -66,7 +80,16 @@ class SessionUsageStatsPlugin(Star):
         self.event_capture_platforms = self.plugin_config.event_capture_platforms
         self.auto_cleanup_enabled = self.plugin_config.auto_cleanup_enabled
         self.auto_cleanup_retention_days = self.plugin_config.auto_cleanup_retention_days
-        self.auto_cleanup_vacuum = self.plugin_config.auto_cleanup_vacuum
+        self.alert_enabled = self.plugin_config.alert_enabled
+        self.alert_daily_token_threshold = self.plugin_config.alert_daily_token_threshold
+        self.alert_session_token_threshold = self.plugin_config.alert_session_token_threshold
+        self.alert_target_id = self.plugin_config.alert_target_id
+        self.alert_check_interval_minutes = self.plugin_config.alert_check_interval_minutes
+
+        self._alert_task: Optional[asyncio.Task] = None
+        self._alert_sent_state: Dict[str, str] = {}
+        self._alert_last_date: str = ""
+        self._alert_last_check: Optional[str] = None
 
         self._event_lock = asyncio.Lock()
         self._model_call_lock = asyncio.Lock()
@@ -109,6 +132,9 @@ class SessionUsageStatsPlugin(Star):
         self._wrap_model_call_providers()
         self._model_call_flush_task = asyncio.create_task(self._model_call_flush_loop())
         
+        # 启动用量告警检查任务
+        self._alert_task = asyncio.create_task(self._alert_loop())
+        
         # 注册 API 路由
         self.api_handler.register_apis()
 
@@ -127,6 +153,15 @@ class SessionUsageStatsPlugin(Star):
                 pass
             except BaseException as e:
                 logger.warning(f"[session_usage_stats] 模型调用 flush 任务停止异常: {e}", exc_info=True)
+
+        if self._alert_task and not self._alert_task.done():
+            self._alert_task.cancel()
+            try:
+                await self._alert_task
+            except asyncio.CancelledError:
+                pass
+            except BaseException as e:
+                logger.warning(f"[session_usage_stats] 告警任务停止异常: {e}", exc_info=True)
         
         try:
             await self._flush_model_call_buffer()
@@ -262,50 +297,6 @@ class SessionUsageStatsPlugin(Star):
         except Exception:
             return None
 
-    def _iter_history_bot_rows(self, start, end, cst):
-        import os as _os
-        import sqlite3 as _sq
-        db_path = self._resolve_main_db_path()
-        if not db_path or not _os.path.exists(str(db_path)):
-            return []
-        conn = _sq.connect(str(db_path), timeout=5)
-        try:
-            start_utc = start.astimezone(timezone.utc).replace(tzinfo=None)
-            end_utc = end.astimezone(timezone.utc).replace(tzinfo=None)
-            rows = conn.execute(
-                """
-                SELECT platform_id, user_id, content, created_at
-                FROM platform_message_history
-                WHERE created_at >= ? AND created_at < ?
-                ORDER BY created_at ASC
-                """,
-                (start_utc.isoformat(sep=" "), end_utc.isoformat(sep=" ")),
-            ).fetchall()
-        finally:
-            conn.close()
-
-        out = []
-        for platform_id, session_id, content_raw, created_at in rows:
-            if platform_id not in self.enabled_platforms:
-                continue
-            try:
-                content = json.loads(content_raw) if isinstance(content_raw, str) else content_raw
-            except Exception:
-                continue
-            if not isinstance(content, dict):
-                continue
-            if content.get("type") != "bot" or self._should_skip_history_content(content):
-                continue
-            dt = self._normalize_datetime(created_at)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            dt_cst = dt.astimezone(cst)
-            if not (start <= dt_cst < end):
-                continue
-            input_tokens, output_tokens, total_tokens = self._extract_token_usage(content)
-            out.append((platform_id, session_id, dt_cst, input_tokens, output_tokens, total_tokens))
-        return out
-
     def _query_stored_bucket_rows(
         self,
         bucket_type: str,
@@ -408,72 +399,48 @@ class SessionUsageStatsPlugin(Star):
             key = (str(row["platform_id"]), str(row["session_id"]))
             grouped[key] = row
 
-        for pid, sid, _dt_cst, input_tokens, output_tokens, total_tokens in self._iter_history_bot_rows(start, end, cst):
-            pid = str(pid)
-            sid = str(sid)
-            if platform_id is not None and pid != str(platform_id):
-                continue
-            if session_id is not None and sid != str(session_id):
-                continue
-            key = (pid, sid)
-            if key in grouped:
-                continue
-            item = grouped.setdefault(key, {
-                "platform_id": pid,
-                "session_id": sid,
-                "round_count": 0,
-                "user_message_count": 0,
-                "bot_message_count": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-            })
-            item["round_count"] += 1
-            item["user_message_count"] += 1
-            item["bot_message_count"] += 1
-            item["input_tokens"] += input_tokens
-            item["output_tokens"] += output_tokens
-            item["total_tokens"] += total_tokens
-
+        # 数据来源单一：会话统计只读插件 usage_stats（不再从主库历史表兜底）
         return sorted(grouped.values(), key=lambda x: x["total_tokens"], reverse=True), window_label, start, end
 
     def _query_model_usage(self, bucket_type: str, scope: str = "chat"):
         start, end, window_label, cst = self._rolling_window(bucket_type)
-        hour_keys = self._rolling_hour_bucket_keys(start, end, cst)
-        min_key = min(hour_keys) if hour_keys else None
-        max_key = max(hour_keys) if hour_keys else None
-        params = [min_key, max_key] if min_key and max_key else ["__none__", "__none__"]
+        # 智能选择桶类型：24h/7d 视图使用精确到小时的 hour 桶，30天及以上视图使用 day 桶（避免 hour 桶 30 天清理限制）
+        if bucket_type in ("day", "week"):
+            query_bucket = "hour"
+            keys = self._rolling_hour_bucket_keys(start, end, cst)
+        else:
+            query_bucket = "day"
+            keys = []
+            cur_day = start.astimezone(cst).replace(hour=0, minute=0, second=0, microsecond=0)
+            end_day = end.astimezone(cst).replace(hour=0, minute=0, second=0, microsecond=0)
+            while cur_day <= end_day:
+                keys.append(cur_day.strftime("%Y-%m-%d"))
+                cur_day += timedelta(days=1)
+                
+        min_key = min(keys) if keys else None
+        max_key = max(keys) if keys else None
+        params = [query_bucket, min_key, max_key] if min_key and max_key else ["__none__", "__none__", "__none__"]
+        
         conn = sqlite3.connect(self.db_path, timeout=10)
         try:
-            if scope == "all":
-                rows = []
-                try:
-                    main_db_path = self._resolve_main_db_path()
-                    if main_db_path:
-                        main_conn = sqlite3.connect(str(main_db_path), timeout=5)
-                        try:
-                            start_utc = start.astimezone(timezone.utc).replace(tzinfo=None)
-                            end_utc = end.astimezone(timezone.utc).replace(tzinfo=None)
-                            rows = main_conn.execute(
-                                """
-                                SELECT provider_model, provider_id,
-                                       COUNT(*) AS call_count,
-                                       SUM(COALESCE(token_input_other,0) + COALESCE(token_input_cached,0)) AS input_tokens,
-                                       SUM(COALESCE(token_output,0)) AS output_tokens,
-                                       SUM(COALESCE(token_input_other,0) + COALESCE(token_input_cached,0) + COALESCE(token_output,0)) AS total_tokens
-                                FROM provider_stats
-                                WHERE status='completed'
-                                  AND created_at >= ? AND created_at < ?
-                                GROUP BY provider_model, provider_id
-                                """,
-                                (start_utc.isoformat(sep=" "), end_utc.isoformat(sep=" ")),
-                            ).fetchall()
-                        finally:
-                            main_conn.close()
-                except Exception as e:
-                    logger.debug(f"[session_usage_stats] 查询 provider_stats 全部模型聊天部分失败，回退 model_call_stats: {e}", exc_info=True)
-                    rows = []
+            # 对话模型基线：插件 model_usage_stats
+            base_rows = conn.execute(
+                """
+                SELECT model_name, provider_name,
+                       SUM(call_count) AS call_count,
+                       SUM(input_tokens) AS input_tokens,
+                       SUM(output_tokens) AS output_tokens,
+                       SUM(total_tokens) AS total_tokens
+                FROM model_usage_stats
+                WHERE bucket_type=? AND bucket_key >= ? AND bucket_key <= ?
+                GROUP BY model_name, provider_name
+                ORDER BY total_tokens DESC, call_count DESC
+                """,
+                params,
+            ).fetchall()
 
+            if scope == "all":
+                # 后台调用差额：model_call_stats（system/background）
                 background_token_rows = conn.execute(
                     """
                     SELECT model_name, provider_name,
@@ -482,7 +449,7 @@ class SessionUsageStatsPlugin(Star):
                            SUM(output_tokens) AS output_tokens,
                            SUM(total_tokens) AS total_tokens
                     FROM model_call_stats
-                    WHERE bucket_type='hour' AND bucket_key >= ? AND bucket_key <= ?
+                    WHERE bucket_type=? AND bucket_key >= ? AND bucket_key <= ?
                       AND platform_id='system' AND session_id='__background__'
                       AND total_tokens>0
                     GROUP BY model_name, provider_name
@@ -497,86 +464,22 @@ class SessionUsageStatsPlugin(Star):
                            SUM(output_tokens) AS output_tokens,
                            SUM(total_tokens) AS total_tokens
                     FROM model_call_stats
-                    WHERE bucket_type='hour' AND bucket_key >= ? AND bucket_key <= ?
+                    WHERE bucket_type=? AND bucket_key >= ? AND bucket_key <= ?
                       AND total_tokens=0
                     GROUP BY model_name, provider_name
                     """,
                     params,
                 ).fetchall()
 
-                base_rows = list(rows or [])
-                covered: dict[tuple[str, str], list[int]] = {}
-                for r in base_rows:
-                    key = (str(r[0] or "unknown"), str(r[1] or "unknown"))
-                    vals = covered.setdefault(key, [0, 0, 0, 0])
-                    vals[0] += int(r[2] or 0)
-                    vals[1] += int(r[3] or 0)
-                    vals[2] += int(r[4] or 0)
-                    vals[3] += int(r[5] or 0)
-
+                # 直接合并（数据已物理清空无历史残留，不再需要 covered 扣减）
+                rows = list(base_rows or [])
                 for r in background_token_rows:
-                    m, p = str(r[0] or "unknown"), str(r[1] or "unknown")
-                    key = (m, p)
-                    c_call, c_in, c_out, c_tot = int(r[2] or 0), int(r[3] or 0), int(r[4] or 0), int(r[5] or 0)
-                    if key in covered:
-                        base_vals = covered[key]
-                        c_call = max(0, c_call - base_vals[0])
-                        c_in = max(0, c_in - base_vals[1])
-                        c_out = max(0, c_out - base_vals[2])
-                        c_tot = max(0, c_tot - base_vals[3])
-                    if c_tot > 0 or c_call > 0:
-                        base_rows.append((m, p, c_call, c_in, c_out, c_tot))
-
+                    rows.append((r[0], r[1], int(r[2] or 0), int(r[3] or 0), int(r[4] or 0), int(r[5] or 0)))
                 for r in background_zero_rows:
-                    m, p = str(r[0] or "unknown"), str(r[1] or "unknown")
-                    c_call = int(r[2] or 0)
-                    base_rows.append((m, p, c_call, 0, 0, 0))
-
-                rows = base_rows
+                    rows.append((r[0], r[1], int(r[2] or 0), 0, 0, 0))
             else:
-                rows = []
-                try:
-                    main_db_path = self._resolve_main_db_path()
-                    if main_db_path:
-                        main_conn = sqlite3.connect(str(main_db_path), timeout=5)
-                        try:
-                            start_utc = start.astimezone(timezone.utc).replace(tzinfo=None)
-                            end_utc = end.astimezone(timezone.utc).replace(tzinfo=None)
-                            rows = main_conn.execute(
-                                """
-                                SELECT provider_model, provider_id,
-                                       COUNT(*) AS call_count,
-                                       SUM(COALESCE(token_input_other,0) + COALESCE(token_input_cached,0)) AS input_tokens,
-                                       SUM(COALESCE(token_output,0)) AS output_tokens,
-                                       SUM(COALESCE(token_input_other,0) + COALESCE(token_input_cached,0) + COALESCE(token_output,0)) AS total_tokens
-                                FROM provider_stats
-                                WHERE status='completed'
-                                  AND created_at >= ? AND created_at < ?
-                                GROUP BY provider_model, provider_id
-                                ORDER BY total_tokens DESC, call_count DESC
-                                """,
-                                (start_utc.isoformat(sep=" "), end_utc.isoformat(sep=" ")),
-                            ).fetchall()
-                        finally:
-                            main_conn.close()
-                except Exception as e:
-                    logger.debug(f"[session_usage_stats] 查询 provider_stats 对话模型失败，回退 model_usage_stats: {e}", exc_info=True)
-                    rows = []
-                if not rows:
-                    rows = conn.execute(
-                        """
-                        SELECT model_name, provider_name,
-                               SUM(call_count) AS call_count,
-                               SUM(input_tokens) AS input_tokens,
-                               SUM(output_tokens) AS output_tokens,
-                               SUM(total_tokens) AS total_tokens
-                        FROM model_usage_stats
-                        WHERE bucket_type='hour' AND bucket_key >= ? AND bucket_key <= ?
-                        GROUP BY model_name, provider_name
-                        ORDER BY total_tokens DESC, call_count DESC
-                        """,
-                        params,
-                    ).fetchall()
+                # 对话模型：直接读插件 model_usage_stats（day 桶）
+                rows = list(base_rows or [])
         finally:
             conn.close()
 
@@ -635,9 +538,9 @@ class SessionUsageStatsPlugin(Star):
             cutoff_retention = now_utc - timedelta(days=retention_days)
             cutoff_retention_iso = cutoff_retention.isoformat(timespec="seconds")
 
-        # 通过 db 实例异步清理
+        # 自动清理不重组数据库文件（VACUUM），仅手动物理清空（_api_clear）时执行 VACUUM
         result = await self.db.run_async(
-            self.db.cleanup_old_data, cutoff_30d_iso, cutoff_retention_iso, self.auto_cleanup_vacuum
+            self.db.cleanup_old_data, cutoff_30d_iso, cutoff_retention_iso
         )
         self._last_cleanup_at = now_ts
         logger.info(
@@ -726,10 +629,6 @@ class SessionUsageStatsPlugin(Star):
             created_at = datetime.now(timezone.utc)
         return str(platform_id), str(session_id), created_at
 
-    @filter.event_message_type(EventMessageType.PRIVATE_MESSAGE | EventMessageType.GROUP_MESSAGE)
-    async def capture_user_message(self, event: AstrMessageEvent):
-        """捕获用户发送的消息，用于确认会话活跃度（预留，当前统计逻辑由 Bot 回复驱动）"""
-        return
 
     @filter.on_agent_done()
     async def capture_bot_response(
@@ -749,7 +648,6 @@ class SessionUsageStatsPlugin(Star):
         platform_id, session_id, created_at = parsed
         input_tokens, output_tokens = self._extract_event_token_usage(response)
         total_tokens = input_tokens + output_tokens
-        model_name, provider_name = self._extract_event_model_info(response, run_context, event)
         async with self._event_lock:
             # 批量异步写入，防止阻塞
             def run_upsert():
@@ -762,18 +660,6 @@ class SessionUsageStatsPlugin(Star):
                         round_inc=1,
                         user_inc=1,
                         bot_inc=1,
-                        input_inc=input_tokens,
-                        output_inc=output_tokens,
-                        total_inc=total_tokens,
-                    )
-                    self.db.upsert_model_usage_row(
-                        platform_id=platform_id,
-                        session_id=session_id,
-                        model_name=model_name,
-                        provider_name=provider_name,
-                        bucket_type=bucket_type,
-                        bucket_key=bucket_key,
-                        call_inc=1,
                         input_inc=input_tokens,
                         output_inc=output_tokens,
                         total_inc=total_tokens,
@@ -1043,7 +929,8 @@ class SessionUsageStatsPlugin(Star):
         session_id: str = "__background__",
     ):
         total_tokens = int(input_tokens or 0) + int(output_tokens or 0)
-        created_at = datetime.now()
+        from zoneinfo import ZoneInfo
+        created_at = datetime.now(ZoneInfo("Asia/Shanghai"))  # 明确 CST 时区，避免被 _normalize_datetime 误当 UTC 导致分桶到明天
         for bucket_type, bucket_key in self._build_bucket_keys(created_at).items():
             key = (
                 str(platform_id or "system"),
@@ -1223,6 +1110,150 @@ class SessionUsageStatsPlugin(Star):
         """主入口不再自己初始化 SQLite，直接交给 db 模块"""
         pass
 
+    async def _alert_loop(self):
+        """用量告警定时检查循环（全局每日用量 + 单会话每日用量）"""
+        await asyncio.sleep(30)  # 启动后延迟 30 秒首次检查
+        while not self._stopping:
+            try:
+                await self._check_and_send_alerts()
+            except Exception as e:
+                logger.warning(f"[session_usage_stats] 用量告警检查异常: {e}", exc_info=True)
+            interval = max(1, self.alert_check_interval_minutes)
+            for _ in range(interval * 60):
+                if self._stopping:
+                    break
+                await asyncio.sleep(1)
+
+    async def _check_and_send_alerts(self):
+        """检查每日用量并发送告警消息（全局超限 + 单会话超限，同类型同天仅告警一次）"""
+        if not self.alert_enabled:
+            return
+        if not self.alert_target_id:
+            return
+
+        from zoneinfo import ZoneInfo
+        cst = ZoneInfo("Asia/Shanghai")
+        today = datetime.now(cst).strftime("%Y-%m-%d")
+
+        # 启动时从数据库加载冷却记录（持久化，避免重载时丢失导致重复发送）
+        if not self._alert_sent_state:
+            try:
+                self._alert_sent_state = self.db.get_alert_sent_state()
+            except Exception:
+                pass
+            # 加载成功后同步日期，防止跨天重置误清刚恢复的数据
+            if self._alert_sent_state:
+                self._alert_last_date = today
+        # 跨天后清空告警记录，新的一天重新计算（仅在内存已有旧数据且日期不同时触发）
+        elif self._alert_last_date != today:
+            self._alert_sent_state.clear()
+            self._alert_last_date = today
+
+        def _query_daily():
+            conn = sqlite3.connect(self.db_path, timeout=10)
+            try:
+                global_total = conn.execute(
+                    "SELECT COALESCE(SUM(total_tokens),0) FROM usage_stats "
+                    "WHERE bucket_type='day' AND bucket_key=?",
+                    (today,),
+                ).fetchone()[0] or 0
+                session_rows = conn.execute(
+                    "SELECT platform_id, session_id, SUM(total_tokens) as tokens FROM usage_stats "
+                    "WHERE bucket_type='day' AND bucket_key=? "
+                    "GROUP BY platform_id, session_id HAVING tokens > 0",
+                    (today,),
+                ).fetchall()
+                return int(global_total), session_rows
+            finally:
+                conn.close()
+
+        global_total, session_rows = await self.db.run_async(_query_daily)
+
+        messages: List[str] = []
+        _sent_keys: List[str] = []  # 待标记的冷却 key（发送成功后才写入）
+
+        # ① 全局每日用量告警
+        if self.alert_daily_token_threshold > 0 and global_total > self.alert_daily_token_threshold and self._alert_sent_state.get("global") != today:
+            messages.append(
+                f"⚠️ 模型用量全局告警（{today}）\n"
+                f"全局累计消耗：{global_total:,} Token\n"
+                f"告警阈值：{self.alert_daily_token_threshold:,} Token"
+            )
+            _sent_keys.append("global")
+
+        # ② 单会话每日用量告警
+        over_limit: List[Tuple[str, str, int]] = []
+        for row in session_rows:
+            platform_id, session_id, tokens = str(row[0]), str(row[1]), int(row[2])
+            if self.alert_session_token_threshold > 0 and tokens > self.alert_session_token_threshold:
+                key = f"session:{platform_id}:{session_id}"
+                if self._alert_sent_state.get(key) != today:
+                    over_limit.append((platform_id, session_id, tokens))
+                    _sent_keys.append(key)
+
+        if over_limit:
+            lines = [
+                f"⚠️ 单会话用量告警（{today}）",
+                f"告警阈值：{self.alert_session_token_threshold:,} Token/会话",
+                "",
+            ]
+            for platform_id, session_id, tokens in over_limit[:20]:
+                lines.append(f"• {platform_id} / {session_id}：{tokens:,} Token")
+            if len(over_limit) > 20:
+                lines.append(f"… 等共 {len(over_limit)} 个会话超限")
+            messages.append("\n".join(lines))
+
+        if not messages:
+            self._alert_last_check = datetime.now(cst).strftime("%Y-%m-%d %H:%M:%S")
+            return
+
+        # 记录检查时间（确保即使发送失败，诊断也能看到）
+        self._alert_last_check = datetime.now(cst).strftime("%Y-%m-%d %H:%M:%S")
+        # 发送告警到每个目标（QQ 号私聊；g: 前缀的群号发送到群聊）
+        # 注意：aiocqhttp 平台的 meta.id 取自平台配置里的 id 字段（可能是自定义值，如「往昔的涟漪」），
+        # 不能硬编码 "aiocqhttp"，否则 session 平台名匹配不到实际平台导致发送失败。
+        from astrbot.core.message.message_event_result import MessageChain
+        from astrbot.core.message.components import Plain
+        _alert_platform_id = "aiocqhttp"
+        try:
+            for _p in self.context.platform_manager.platform_insts:
+                if _p.meta().name == "aiocqhttp":
+                    _alert_platform_id = _p.meta().id
+                    break
+        except Exception as _e:
+            logger.warning(f"[session_usage_stats] 获取 aiocqhttp 平台 id 失败，兜底为 aiocqhttp: {_e}", exc_info=True)
+        text = "\n\n".join(messages)
+        _sent_ok = False
+        for _target in (self.alert_target_id or []):
+            _target = str(_target).strip()
+            if not _target:
+                continue
+            # g:/group: 前缀 → 群聊；否则视为 QQ 号 → 私聊
+            if _target.lower().startswith(("g:", "group:")):
+                _session_str = f"{_alert_platform_id}:GroupMessage:{_target.split(':', 1)[1].strip()}"
+            else:
+                _session_str = f"{_alert_platform_id}:FriendMessage:{_target}"
+            try:
+                ok = await self.context.send_message(_session_str, MessageChain([Plain(text)]))
+                if ok:
+                    _sent_ok = True
+                    logger.info(f"[session_usage_stats] 用量告警已发送至 {_session_str}")
+                else:
+                    logger.warning(
+                        f"[session_usage_stats] 告警消息未送达：找不到平台（session={_session_str}）"
+                    )
+            except Exception as e:
+                logger.warning(f"[session_usage_stats] 告警消息发送失败: {e}", exc_info=True)
+
+        # 发送成功后才标记冷却记录（失败时下次检查重新拿实时数据合并发送）
+        if _sent_ok:
+            for key in _sent_keys:
+                self._alert_sent_state[key] = today
+            try:
+                self.db.set_alert_sent_state(self._alert_sent_state)
+            except Exception:
+                pass
+
     async def _model_call_flush_loop(self):
         await asyncio.sleep(5)
         while not self._stopping:
@@ -1353,6 +1384,109 @@ class SessionUsageStatsPlugin(Star):
             return True
         return False
 
+    async def sync_model_usage_from_provider_stats(self) -> int:
+        """从主库 provider_stats 增量同步对话模型调用到插件 model_usage_stats。
+
+        对话模型的权威来源是 AstrBot 主库 provider_stats（AstrBot 核心记录，不依赖插件存活）。
+        此处按 provider_stats.id 游标增量同步，避免事件捕获漏记导致对话模型数据永久缺失。
+        """
+        main_db_path = self._resolve_main_db_path()
+        if not main_db_path:
+            return 0
+
+        def _sync():
+            cursor = self.db.get_provider_stats_cursor()
+            conn = sqlite3.connect(str(main_db_path), timeout=10)
+            try:
+                # 首次同步：游标为 0 时初始化为主库当前最大 id，
+                # 跳过已有历史（避免与事件捕获时期的数据重复），只同步之后的新调用。
+                if not cursor:
+                    cur_max = conn.execute(
+                        "SELECT COALESCE(MAX(id),0) FROM provider_stats WHERE status='completed'"
+                    ).fetchone()[0] or 0
+                    if cur_max:
+                        self.db.set_provider_stats_cursor(int(cur_max))
+                        return 0
+                rows = conn.execute(
+                    """
+                    SELECT id, umo, provider_id, provider_model,
+                           token_input_other, token_input_cached, token_output, created_at
+                    FROM provider_stats
+                    WHERE id > ? AND status='completed'
+                    ORDER BY id ASC
+                    """,
+                    (int(cursor),),
+                ).fetchall()
+            finally:
+                conn.close()
+
+            if not rows:
+                return 0
+
+            max_id = cursor
+            now = datetime.now().isoformat(timespec="seconds")
+            for row in rows:
+                rec_id, umo, provider_id, provider_model, in_other, in_cached, out, created_at = row
+                max_id = max(max_id, int(rec_id))
+                try:
+                    # 解析 umo：platform:MessageType:session_id
+                    parts = str(umo or "").split(":", 2)
+                    if len(parts) < 3:
+                        continue
+                    platform_id = parts[0].strip()
+                    session_id = parts[2].strip()
+                    if not platform_id or not session_id:
+                        continue
+
+                    model_name = str(provider_model or "").strip()
+                    provider_name = str(provider_id or "").strip()
+                    if not model_name:
+                        continue
+
+                    input_tokens = int(in_other or 0) + int(in_cached or 0)
+                    output_tokens = int(out or 0)
+                    total_tokens = input_tokens + output_tokens
+
+                    created = created_at or now
+                    bucket_keys = self._build_bucket_keys(created)
+                    for bucket_type, bucket_key in bucket_keys.items():
+                        self.db.upsert_model_usage_row(
+                            platform_id=platform_id,
+                            session_id=session_id,
+                            model_name=model_name,
+                            provider_name=provider_name,
+                            bucket_type=bucket_type,
+                            bucket_key=bucket_key,
+                            call_inc=1,
+                            input_inc=input_tokens,
+                            output_inc=output_tokens,
+                            total_inc=total_tokens,
+                        )
+                        # 数据层扣减：正常对话已被主库权威记录，
+                        # 从 model_call_stats 扣减同模型同桶的 wrapper 重复记录，
+                        # 让 model_call_stats 只保留主库未覆盖的纯后台差额（插件直连/嵌入/重排）。
+                        self.db.deduct_model_call_row(
+                            model_name=model_name,
+                            provider_name=provider_name,
+                            bucket_type=bucket_type,
+                            bucket_key=bucket_key,
+                            call_dec=1,
+                            input_dec=input_tokens,
+                            output_dec=output_tokens,
+                            total_dec=total_tokens,
+                        )
+                except Exception:
+                    continue
+
+            self.db.set_provider_stats_cursor(max_id)
+            return len(rows)
+
+        try:
+            return await self.db.run_async(_sync)
+        except Exception as e:
+            logger.warning(f"[session_usage_stats] 从主库同步对话模型失败: {e}", exc_info=True)
+            return 0
+
     async def scan_incremental(self, reason: str = "manual") -> dict[str, int]:
         """将增量扫描委托给 scanner 服务"""
         return await self.scanner.scan_incremental(reason)
@@ -1394,13 +1528,13 @@ class SessionUsageStatsPlugin(Star):
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("会话统计模式")
     async def session_usage_stats_mode(self, event: AstrMessageEvent):
-        """查看当前会话统计的运行模式与相关配置（需管理员权限）"""
-        mode_text = "实时事件捕获" if self.enable_event_capture else "定时增量扫描"
+        """查看当前会话统计的运行模式与相关配置"""
+        mode_text = "实时事件捕获"  # 强制开启，保证统计准确性
         lines = [
             "会话统计当前模式",
             f"运行模式：{mode_text}",
             f"自动清理：{'开启' if self.auto_cleanup_enabled else '关闭'}，保留天数：{self.auto_cleanup_retention_days} 天",
-            f"自动扫描：{'开启' if self.enable_auto_scan else '关闭'}，周期：{self.auto_scan_interval_minutes} 分钟",
+            f"自动扫描：开启，周期：{self.auto_scan_interval_minutes} 分钟",
             f"有效统计平台：{', '.join(self.enabled_platforms)}",
             f"事件捕获平台：{', '.join(self.event_capture_platforms)}",
         ]
@@ -1474,7 +1608,7 @@ class SessionUsageStatsPlugin(Star):
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("会话统计诊断")
     async def session_usage_stats_diag(self, event: AstrMessageEvent):
-        """诊断模型用量统计插件运行状态，查看 Provider 包装与模型调用记录情况（需管理员权限）"""
+        """诊断模型用量统计插件运行状态，查看 Provider 包装与模型调用记录情况"""
         stats = self._wrap_model_call_providers()
         
         def run_diag():
@@ -1506,12 +1640,34 @@ class SessionUsageStatsPlugin(Star):
                 lines.append(f"- {m} / {p}：{int(c or 0)} 次，{int(t or 0)} Token")
         else:
             lines.append("最近模型：暂无。请在插件重载后实际触发一次模型调用，再刷新面板。")
+        # 告警运行状态
+        lines.append("")
+        lines.append("📊 告警状态：")
+        lines.append(f"  启用：{'✅ 是' if self.alert_enabled else '❌ 否'}")
+        _task_ok = getattr(self, "_alert_task", None) and not self._alert_task.done()
+        lines.append(f"  任务存活：{'✅ 是' if _task_ok else '❌ 否（未启动或已停止，请重启插件）'}")
+        lines.append(f"  上次检查：{self._alert_last_check or '从未执行'}")
+        _pid = "aiocqhttp"
+        try:
+            for _p in self.context.platform_manager.platform_insts:
+                if _p.meta().name == "aiocqhttp":
+                    _pid = _p.meta().id
+                    break
+        except Exception:
+            pass
+        lines.append(f"  QQ 平台 id：{_pid}")
+        lines.append(f"  告警目标：{self.alert_target_id or '未配置'}")
+        lines.append(
+            f"  阈值：全局 {self.alert_daily_token_threshold:,} / 单会话 {self.alert_session_token_threshold:,} Token"
+        )
+        lines.append(f"  检查间隔：{self.alert_check_interval_minutes} 分钟")
+        lines.append(f"  冷却记录：{dict(self._alert_sent_state) if self._alert_sent_state else '无'}")
         yield event.plain_result("\n".join(lines))
 
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("会话统计全部")
     async def session_usage_stats_all(self, event: AstrMessageEvent):
-        """查询所有会话的用量统计汇总（需管理员权限，支持今日 / 本周 / 本月）"""
+        """查询所有会话的用量统计汇总（支持今日 / 本周 / 本月）"""
         args = event.message_str.strip().split()
         sub = args[1].strip() if len(args) >= 2 else "今日"
         if sub not in {"今日", "本周", "本月"}:
