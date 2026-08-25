@@ -167,6 +167,12 @@ class MessageScanner:
 
                 await asyncio.sleep(0)
 
+            # 顺带从主库 provider_stats 增量同步对话模型（对话模型权威来源，不依赖事件捕获）
+            try:
+                await self.plugin.sync_model_usage_from_provider_stats()
+            except Exception as e:
+                logger.error(f"[session_usage_stats] 同步对话模型异常: {e}", exc_info=True)
+
             return {
                 "processed": processed,
                 "touched_sessions": len(touched_sessions),
@@ -178,6 +184,8 @@ class MessageScanner:
         while not self._stopping:
             try:
                 await self.scan_incremental(reason="auto_scan")
+                # 每次自动扫描后执行自动清理（_cleanup_old_data 内部有 1 小时冷却防抖，不会频繁清理）
+                await self.plugin._cleanup_old_data(reason="auto_scan")
             except Exception as e:
                 logger.error(f"[session_usage_stats] 自动扫描异常: {e}", exc_info=True)
             interval = max(1, self.config.auto_scan_interval_minutes)
