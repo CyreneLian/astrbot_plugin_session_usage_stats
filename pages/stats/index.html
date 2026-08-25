@@ -892,7 +892,7 @@ function ensureOthersPop(){
   if(_othersPop) return _othersPop;
   const el=document.createElement('div');
   el.className='others-pop';
-  el.style.cssText='position:fixed;z-index:50;min-width:220px;max-width:320px;max-height:240px;overflow-y:auto;padding:10px 12px;border-radius:10px;background:var(--surface);border:1px solid var(--border-strong);box-shadow:0 8px 24px rgba(0,0,0,.12);font-size:12.5px;line-height:1.6;color:var(--fg);display:none;pointer-events:none;backdrop-filter:blur(6px)';
+  el.style.cssText='position:fixed;z-index:50;min-width:220px;max-width:320px;max-height:240px;overflow-y:auto;padding:10px 12px;border-radius:10px;background:var(--surface);border:1px solid var(--border-strong);box-shadow:0 8px 24px rgba(0,0,0,.12);font-size:12.5px;line-height:1.6;color:var(--fg);display:none;pointer-events:auto;backdrop-filter:blur(6px)';
   document.body.appendChild(el);
   _othersPop=el;
   return el;
@@ -923,6 +923,8 @@ function bindOthersHover(){
       if(left+popR.width>window.innerWidth-8){ left=Math.max(8,window.innerWidth-popR.width-8); }
       pop.style.left=left+'px';
       pop.style.top=top+'px';
+      pop.onmouseenter=()=>{ clearTimeout(timer); };
+      pop.onmouseleave=()=>{ timer=setTimeout(hide,80); };
     };
     const hide=()=>{
       const pop=ensureOthersPop();
@@ -949,7 +951,50 @@ document.querySelectorAll('#topMetricSwitch button').forEach(b=>b.onclick=()=>{d
 document.querySelectorAll('#trendMetricSwitch button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#trendMetricSwitch button').forEach(x=>x.classList.remove('on'));b.classList.add('on');trendMetric=b.dataset.m;renderTrend()});
 document.querySelectorAll('#tableSortSwitch button').forEach(b=>b.onclick=()=>{const m=b.dataset.sort;if(tableSortMetric===m){tableSortDir=tableSortDir==='desc'?'asc':'desc'}else{tableSortMetric=m;tableSortDir='desc'}renderTable()});
 $('btn-refresh').onclick=()=>{dataCache.clear();modelStatsCache.clear();load(currentTab)}; $('search').oninput=e=>{query=e.target.value;renderTable()};
-let confirm=false,timer=null; $('btn-clear').onclick=async()=>{const btn=$('btn-clear'); if(!confirm){confirm=true;btn.textContent='再次点击确认清空';status('请再次点击确认清空','loading');clearTimeout(timer);timer=setTimeout(()=>{confirm=false;btn.textContent='清空数据';status('已取消清空确认','ok')},5000);return} confirm=false;clearTimeout(timer);btn.disabled=true;btn.textContent='清空中...';status('正在清空...','loading');try{const r=await apiPostRetry('page/clear',{});status('已清空，游标 '+(r?.last_message_id??'当前末尾'),'ok');await load(currentTab)}catch(e){status('清空失败: '+(e?.message||e),'err')}finally{btn.disabled=false;btn.textContent='清空数据'}};
+let confirm=false,timer=null; $('btn-clear').onclick=async()=>{const btn=$('btn-clear'); if(!confirm){confirm=true;btn.textContent='再次点击确认清空';clearTimeout(timer);timer=setTimeout(()=>{confirm=false;btn.textContent='清空数据'},5000);return} confirm=false;clearTimeout(timer);btn.disabled=true;btn.textContent='清空中...';status('正在清空...','loading');try{const r=await apiPostRetry('page/clear',{});status('已清空，游标 '+(r?.last_message_id??'当前末尾'),'ok');await load(currentTab)}catch(e){status('清空失败: '+(e?.message||e),'err')}finally{btn.disabled=false;btn.textContent='清空数据'}};
+/* ===== 版本升级提示弹窗（首次/升级后展示一次，5秒强制等待后可关闭） ===== */
+/* 通过后端 API 存储已读状态，不受浏览器 iframe 沙箱限制 */
+try{(function(){
+  (async function(){
+    try{
+      const resp = await apiGetRetry('page/notice_status');
+      if(resp && resp.seen) return;
+    }catch(e){ /* 查询失败按未看过处理，继续弹窗 */ }
+
+    const overlay=document.createElement('div');
+    overlay.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(15,18,30,.55);display:flex;align-items:center;justify-content:center;padding:20px';
+    const box=document.createElement('div');
+    box.style.cssText='max-width:520px;width:100%;background:var(--surface,#fff);border:1px solid var(--border-strong,#d8dbe6);border-radius:14px;padding:22px 24px;box-shadow:0 12px 40px rgba(0,0,0,.25);font-size:16px;line-height:1.8;color:var(--fg,#222)';
+    box.innerHTML=`
+      <div style="font-weight:700;font-size:19px;margin-bottom:12px">⚠️ 重要升级提示</div>
+      <div style="margin-bottom:18px">由于统计层与查询层的大幅重构，为避免旧架构的历史数据污染新的统计数据导致统计结果出现<b>大幅偏差</b>，建议从 2.1.6 及之前版本升级到此版本的老用户手动点击<b>清空数据</b>后再使用！</div>`;
+    const btn=document.createElement('button');
+    btn.disabled=true;
+    btn.textContent='我知道了（5s）';
+    btn.style.cssText='width:100%;padding:9px 0;border:none;border-radius:8px;background:#9aa2b5;color:#fff;font-size:16px;padding:11px 0;cursor:not-allowed;transition:background .3s';
+    let left=5;
+    const tick=setInterval(()=>{
+      left--;
+      if(left>0){ btn.textContent='我知道了（'+left+'s）'; }
+      else{
+        clearInterval(tick);
+        btn.disabled=false;
+        btn.textContent='我知道了';
+        btn.style.background='#5b7cfa';
+        btn.style.cursor='pointer';
+      }
+    },1000);
+    btn.onclick=()=>{
+      if(btn.disabled) return;
+      overlay.remove();
+      try{ apiPostRetry('page/notice_ack',{}); }catch(e){}
+    };
+    box.appendChild(btn);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  })();
+})();}catch(e){ /* 弹窗任何异常都不影响主加载流程 */ }
+
 bridge.ready().then(()=>load(currentTab));
 </script>
 </body>
