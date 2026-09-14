@@ -52,27 +52,37 @@
       }
     }
   },
-  "用量告警设置": {
-    "description": "用量告警设置",
-    "hint": "每日 Token 用量超限时向指定 QQ 发送告警的相关配置。",
+  "用量告警默认设置": {
+    "description": "用量告警默认设置",
+    "hint": "每日单会话或全局用量超限时向指定 QQ 发送告警的默认设置。",
     "type": "object",
     "items": {
       "alert_enabled": {
-        "description": "是否启用用量告警",
+        "description": "用量告警总开关",
         "type": "bool",
-        "hint": "开启后，每日 Token 用量超过阈值时会向指定 QQ 发送告警消息。",
+        "hint": "开启后，每日用量超过阈值时会向指定 QQ 发送告警消息。",
         "default": false
       },
-      "alert_daily_token_threshold": {
-        "description": "全局每日 Token 告警阈值",
+      "alert_mode": {
+        "description": "告警模式",
+        "type": "string",
+        "hint": "token=按每日 Token 用量告警；rounds=按每日对话轮数告警（一问一答算一轮）。",
+        "default": "token",
+        "options": [
+          "token",
+          "rounds"
+        ]
+      },
+      "alert_session_threshold": {
+        "description": "单会话每日告警默认值",
         "type": "int",
-        "hint": "填 0 不启用。当日所有会话累计 Token 超过此值时触发全局告警。",
+        "hint": "填 0 不启用。单个会话当日 Token / 轮数超过此值时，触发单会话告警。可在前端面板为具体会话单独覆盖。",
         "default": 0
       },
-      "alert_session_token_threshold": {
-        "description": "单会话每日 Token 告警阈值",
+      "alert_daily_threshold": {
+        "description": "全局每日告警默认值",
         "type": "int",
-        "hint": "填 0 不启用。单个会话当日 Token 超过此值时触发单会话告警。",
+        "hint": "填 0 不启用。所有会话当日累计 Token / 轮数超过此值时，触发全局告警。",
         "default": 0
       },
       "alert_target_id": {
@@ -89,6 +99,41 @@
         "type": "int",
         "hint": "每隔多少分钟检查一次用量是否超限。",
         "default": 30
+      }
+    }
+  },
+  "用量限制默认设置": {
+    "description": "用量限制默认设置",
+    "hint": "限制单会话或全局的每日用量，超限后会话将被拒绝响应的默认设置。",
+    "type": "object",
+    "items": {
+      "limit_enabled": {
+        "description": "用量限制总开关",
+        "type": "bool",
+        "hint": "开启后，达到限制阈值的会话发送消息时将直接收到超限提示，不再调用模型。",
+        "default": false
+      },
+      "limit_mode": {
+        "description": "限制模式",
+        "type": "string",
+        "hint": "token=按每日 Token 用量限制；rounds=按每日对话轮数限制（一问一答算一轮）。",
+        "default": "token",
+        "options": [
+          "token",
+          "rounds"
+        ]
+      },
+      "limit_session_default": {
+        "description": "单会话每日限制默认值",
+        "type": "int",
+        "hint": "填 0 不启用。单个会话当日 Token / 轮数超过此值即被限制；可在前端面板为具体会话单独覆盖。",
+        "default": 0
+      },
+      "limit_global_default": {
+        "description": "全局每日限制默认值",
+        "type": "int",
+        "hint": "填 0 不启用。所有会话当日累计 Token / 轮数超过此值时，所有会话均被限制。",
+        "default": 0
       }
     }
   }

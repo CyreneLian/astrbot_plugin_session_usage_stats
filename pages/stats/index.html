@@ -95,8 +95,8 @@ body{
 .panel h3.model-title #modelScopeSwitch,.panel h3.model-title #modelMetricSwitch{margin-left:0}
 .panel h3.model-title small{grid-column:2;grid-row:1;justify-self:end}
 .wide{grid-column:1/-1}
-.chart{height:280px;position:relative}.chart.small{height:240px}
-.empty{padding:56px 0;text-align:center;color:var(--muted);font-size:14px}
+.chart{height:360px;position:relative}.chart.small{height:240px}
+.empty{padding:56px 0;text-align:center;color:var(--muted);font-size:14px;animation:breathe 2.6s ease-in-out infinite}
 .bars{display:flex;flex-direction:column;gap:12px}
 .bar-row{display:grid;grid-template-columns:minmax(120px,1fr) 3fr 90px;gap:12px;align-items:center;font-size:14px;padding:10px 0;border-bottom:1px solid var(--border)}
 .bar-row:last-child{border-bottom:0}
@@ -151,6 +151,12 @@ tbody tr{animation:fadeSlide .34s ease both}
 @keyframes lineDraw{to{stroke-dashoffset:0}}
 @keyframes dotPop{from{opacity:0;transform:scale(.45)}to{opacity:.92;transform:scale(1)}}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+/* —— 动画与交互优化（v2.2.x 打磨） —— */
+.btn:active,.tab:active,.mini-switch button:active{transform:scale(.97)}
+.donut-arc{transition:opacity .18s ease}
+.donut-arc.dim{opacity:.3!important}
+.legend-item.hl{background:var(--soft);border-radius:8px;color:var(--fg)}
+@keyframes breathe{0%,100%{opacity:.55}50%{opacity:1}}
 .table-tools{display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:14px}
 .input{border:1px solid var(--border);background:var(--surface);color:var(--fg);border-radius:999px;padding:10px 14px;min-width:260px;font-size:13px;outline:none;transition:border-color .18s ease,background-color .18s ease}
 .input:focus{border-color:var(--primary);background:var(--soft)}
@@ -276,6 +282,19 @@ td.right,th.right{text-align:right}
   .donut{margin:0 auto}
   .panel h3.model-title{display:flex;flex-direction:column;align-items:flex-start;gap:12px;grid-template-columns:none}
   .panel h3.model-title .model-switches{position:static;transform:none;justify-content:flex-start;flex-wrap:wrap;gap:12px;min-width:0;width:100%}
+.toggle{position:relative;display:inline-block;width:38px;height:22px;vertical-align:middle}
+.toggle input{opacity:0;width:0;height:0}
+.toggle i{position:absolute;inset:0;background:var(--soft);border:1px solid var(--border-strong);border-radius:999px;transition:background-color .18s ease;cursor:pointer}
+.toggle i:before{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;background:#fff;border-radius:50%;transition:transform .18s ease;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.toggle input:checked+i{background:var(--primary);border-color:var(--primary)}
+.toggle input:checked+i:before{transform:translateX(16px)}
+.limits-input{width:96px;padding:6px 8px;font-size:12px}
+.limits-hint{font-size:12px;color:var(--muted);line-height:1.7}
+.limits-defaults{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 24px;font-size:13px}
+.limits-defaults b{color:var(--fg);font-variant-numeric:tabular-nums}
+.limits-defaults span{color:var(--muted)}
+.follow-default{font-size:11px;color:var(--muted);white-space:nowrap}
+
   .panel h3.model-title small{align-self:flex-start}
 }
 @media(max-width:900px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -293,10 +312,11 @@ body:not(.is-loading) .panel,body:not(.is-loading) .card{transition:opacity .2s}
 <div class="shell">
   <div class="hero">
     <div class="title">
-      <h1>模型用量统计仪表盘</h1>
+      <h1 id="pageTitle">模型用量统计仪表盘</h1>
       <p id="subtitle">把散落的模型调用、次数与 Token，整理成一张更清楚的星图。</p>
     </div>
     <div class="actions">
+      <button class="btn" id="btn-limits">限制与告警</button>
       <span class="badge loading" id="status">准备中...</span>
       <button class="btn" id="btn-refresh">刷新</button>
       <button class="btn danger" id="btn-clear">清空数据</button>
@@ -342,12 +362,28 @@ body:not(.is-loading) .panel,body:not(.is-loading) .card{transition:opacity .2s}
       <div class="table-wrap"><table id="table"></table></div>
     </section>
   </div>
+  <div id="limitsView" style="display:none">
+    <section class="panel wide" style="margin-bottom:20px">
+      <h3>插件默认值 <small>修改请前往 AstrBot 插件配置面板「用量限制设置 / 用量告警设置」分组</small></h3>
+      <div class="limits-defaults" id="limitsDefaults"></div>
+    </section>
+    <section class="panel wide">
+      <h3>会话限制与告警 <small id="limitsHint">今日活跃会话</small></h3>
+      <div class="table-tools">
+        <input class="input" id="limits-search" placeholder="搜索平台或会话 ID..."/>
+        <span class="limits-hint">留空跟随插件默认值；开关可豁免或单独启用具体会话，但需要开启对应总开关。</span>
+      </div>
+      <div class="table-wrap"><table id="limitsTable"></table></div>
+    </section>
+  </div>
   <div class="watermark">轻量 SVG/CSS 图表 · Top N 与表格滚动保护 · 关闭页面后前端图表内存会被浏览器回收</div>
 </div>
 <script src="/api/plugin/page/bridge-sdk.js"></script>
 <script>
 const bridge = window.AstrBotPluginPage;
 let currentTab='day', rows=[], trendRows=[], modelRows=[], allModelRows=[], query='', platformMetric='total_tokens', modelMetric='total_tokens', modelScope='chat', topMetric='total_tokens', trendMetric='total_tokens', tableSortMetric='total_tokens', tableSortDir='desc';
+const REDUCED=!!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+let zeroRollOnce=false;
 const modelStatsCache=new Map();
 const dataCache=new Map();
 function modelCacheKey(tab,scope){return `${tab}:${scope}`}
@@ -439,15 +475,42 @@ async function loadModelStats({force=false}={}){
   }catch(e){status('模型加载失败: '+(e&&e.message?e.message:e),'err')}
 }
 function renderAll(){renderCards();renderTopBars();renderDonut();renderModelDonut();renderTrend();renderTable()}
+
 function renderCards(){
   const totalRounds=sum(rows,'round_count');
   const platforms=new Set(rows.map(r=>r.platform_id)).size;
   const modelSource=(allModelRows&&allModelRows.length)?allModelRows:modelRows;
   const tokenModelSource=modelSource.filter(r=>Number(r.total_tokens||0)>0);
   const allModelCalls=sum(tokenModelSource,'call_count'), totalTok=sum(modelSource,'total_tokens'), input=sum(modelSource,'input_tokens'), output=sum(modelSource,'output_tokens');
+  const oldVals=new Map();
+  document.querySelectorAll('#summary .card').forEach(c=>{
+    const labEl=c.querySelector('.lab'), valEl=c.querySelector('.val[data-count]');
+    if(labEl&&valEl)oldVals.set(labEl.textContent,Number(valEl.dataset.count||0));
+  });
   $('summary').innerHTML=[
-    ['会话数',rows.length,'当前周期记录数'],['总轮数',fmt(totalRounds),'Bot 回复轮次'],['全部模型总 Token',fmt(totalTok),`${fmt(allModelCalls)} 次有 Token 调用`],['全部模型输入 Token',fmt(input),'Prompt 消耗'],['全部模型输出 Token',fmt(output),`输出 · 平台数 ${platforms}`]
-  ].map(([lab,val,h])=>`<div class="card"><div class="lab">${lab}</div><div class="val">${val}</div><div class="hint">${h}</div></div>`).join('')
+    ['会话数',rows.length,'当前周期记录数',0],['总轮数',totalRounds,'Bot 回复轮次',1],['全部模型总 Token',totalTok,`${fmt(allModelCalls)} 次有 Token 调用`,1],['全部模型输入 Token',input,'Prompt 消耗',1],['全部模型输出 Token',output,`输出 · 平台数 ${platforms}`,1]
+  ].map(([lab,v,h,f])=>`<div class="card"><div class="lab">${lab}</div><div class="val" data-count="${v}" data-fmt="${f}">${f?fmt(v):v}</div><div class="hint">${h}</div></div>`).join('')
+  if(!REDUCED)animateCardCounts(zeroRollOnce?new Map():oldVals)
+  zeroRollOnce=false;
+}
+function animateCardCounts(oldVals){
+  document.querySelectorAll('#summary .card').forEach((card,idx)=>{
+    const el=card.querySelector('.val[data-count]'), labEl=card.querySelector('.lab');
+    if(!el)return;
+    const target=Number(el.dataset.count||0), useFmt=el.dataset.fmt==='1';
+    const lab=labEl?labEl.textContent:'';
+    const start=(oldVals&&oldVals.has(lab))?Number(oldVals.get(lab)):0;
+    const dur=680, t0=performance.now()+idx*70;
+    function step(t){
+      const p=Math.min(1,Math.max(0,(t-t0)/dur));
+      const e=1-Math.pow(1-p,3);
+      const v=Math.round(start+(target-start)*e);
+      el.dataset.count=String(v);
+      el.textContent=useFmt?fmt(v):String(v);
+      if(p<1)requestAnimationFrame(step);else{el.dataset.count=String(target);el.textContent=useFmt?fmt(target):String(target);}
+    }
+    requestAnimationFrame(step);
+  })
 }
 function renderTopBars(){
   const metric=topMetric==='round_count'?'round_count':'total_tokens';
@@ -494,7 +557,7 @@ function donutRoundSVG(entries,total,colors){
                 `A ${R_in} ${R_in} 0 1 0 ${cx} ${(cy - R_in).toFixed(2)} Z`;
 
   if(valid.length===1){
-    return `<svg class="donut-svg" viewBox="0 0 ${size} ${size}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"><path class="donut-arc" d="${ringD}" fill="${colors[0]}" fill-rule="evenodd"/></svg>`;
+    return `<svg class="donut-svg" viewBox="0 0 ${size} ${size}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"><path class="donut-arc" data-i="0" d="${ringD}" fill="${colors[0]}" fill-rule="evenodd"/></svg>`;
   }
 
   const totalValue=Math.max(1,total);
@@ -517,7 +580,7 @@ function donutRoundSVG(entries,total,colors){
             `A ${R_out} ${R_out} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} `+
             `L ${x3.toFixed(2)} ${y3.toFixed(2)} `+
             `A ${R_in} ${R_in} 0 ${large} 0 ${x4.toFixed(2)} ${y4.toFixed(2)} Z`;
-    return `<path class="donut-arc" d="${d}" fill="${color}" style="animation-delay:${0.12+i*0.10}s"/>`;
+    return `<path class="donut-arc" data-i="${i}" d="${d}" fill="${color}" style="animation-delay:${0.12+i*0.10}s"/>`;
   }).join('');
 
   const gapForBoundary=(left,right)=>{
@@ -596,7 +659,7 @@ function donutSVG(entries,total,colors){
               `M ${cx} ${(cy - R_in).toFixed(2)} ` +
               `A ${R_in} ${R_in} 0 1 0 ${cx} ${(cy + R_in).toFixed(2)} ` +
               `A ${R_in} ${R_in} 0 1 0 ${cx} ${(cy - R_in).toFixed(2)} Z`;
-    paths.push(`<path class="donut-arc" d="${d}" fill="${colors[0]}"/>`);
+    paths.push(`<path class="donut-arc" data-i="0" d="${d}" fill="${colors[0]}"/>`);
     return `<svg class="donut-svg" viewBox="0 0 ${size} ${size}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">${paths.join('')}</svg>`;
   }
   let angle=-Math.PI/2;
@@ -647,7 +710,7 @@ function donutSVG(entries,total,colors){
                   `A ${R_out.toFixed(2)} ${R_out.toFixed(2)} 0 0 1 ${wx2.toFixed(2)} ${wy2.toFixed(2)} ` +
                   `L ${wx3.toFixed(2)} ${wy3.toFixed(2)} ` +
                   `A ${R_in.toFixed(2)} ${R_in.toFixed(2)} 0 0 0 ${wx4.toFixed(2)} ${wy4.toFixed(2)} Z`;
-        paths.push(`<path class="donut-arc" d="${wd}" fill="${color}" style="animation-delay:${0.12+i*0.10}s"/>`);
+        paths.push(`<path class="donut-arc" data-i="${i}" d="${wd}" fill="${color}" style="animation-delay:${0.12+i*0.10}s"/>`);
       } else {
         // 圆角连接点
         // 外圈入点
@@ -725,7 +788,7 @@ function renderDonut(){
     ? `当前周期仅检测到 ${esc(mainPlatform)} 平台数据。`
     : `当前仅展示前 ${entries.length} 个平台${hiddenPlatforms?`，已隐藏 ${hiddenPlatforms} 个平台`:''}。主力平台 ${esc(mainPlatform)} 占当前展示 ${share}% 的${metricLabel}。`;
   const svg=donutRoundSVG(entries,total,colors);
-  $('platformDonut').innerHTML=`<div class="donut-wrap"><div class="donut donut-svg-wrap">${svg}</div><div class="legend">${entries.map(([k,v],i)=>`<div class="legend-item" style="animation-delay:${0.08+i*0.035}s"><span class="dot" style="background:${colors[i%colors.length]}"></span><span style="flex:1">${esc(k)}</span><b>${fmt(v)} ${metricLabel}</b><span>${(v/total*100).toFixed(1)}%</span></div>`).join('')}<div class="platform-summary"><div class="headline"><div><div class="label">主力平台</div><div class="main" title="${esc(mainPlatform)}">${esc(mainPlatform)}</div></div><div class="share">${share}%</div></div><div class="stats"><div class="stat"><span>${metricLabel}</span><b>${fmt(mainDetail[metric])}</b></div><div class="stat"><span>${otherLabel}</span><b>${fmt(mainDetail[otherMetric])}</b></div></div><div class="tip">${summaryTip} · 覆盖 ${fmt(mainDetail.session_count)} 个会话。</div></div></div></div>`
+  $('platformDonut').innerHTML=`<div class="donut-wrap"><div class="donut donut-svg-wrap">${svg}</div><div class="legend">${entries.map(([k,v],i)=>`<div class="legend-item" data-i="${i}" style="animation-delay:${0.08+i*0.035}s"><span class="dot" style="background:${colors[i%colors.length]}"></span><span style="flex:1">${esc(k)}</span><b>${fmt(v)} ${metricLabel}</b><span>${(v/total*100).toFixed(1)}%</span></div>`).join('')}<div class="platform-summary"><div class="headline"><div><div class="label">主力平台</div><div class="main" title="${esc(mainPlatform)}">${esc(mainPlatform)}</div></div><div class="share">${share}%</div></div><div class="stats"><div class="stat"><span>${metricLabel}</span><b>${fmt(mainDetail[metric])}</b></div><div class="stat"><span>${otherLabel}</span><b>${fmt(mainDetail[otherMetric])}</b></div></div><div class="tip">${summaryTip} · 覆盖 ${fmt(mainDetail.session_count)} 个会话。</div></div></div></div>`
 }
 function renderModelDonut(){
   const metric=modelMetric==='call_count'?'call_count':'total_tokens';
@@ -757,14 +820,14 @@ function renderModelDonut(){
   $('modelDonut').innerHTML=`<div class="donut-wrap"><div class="donut donut-svg-wrap">${svg}${entries.length===1?'<div class="donut-center-label" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted);pointer-events:none;z-index:1">100%</div>':''}</div><div class="legend">${entries.map(([k,v,r],i)=>{
     const others=r&&r.__others?r.__others:null;
     const othersAttr=others?` data-others='${esc(JSON.stringify({items:others,metric:metricLabel}))}'`:"";
-    return `<div class="legend-item${others?' has-others':''}" style="animation-delay:${0.08+i*0.035}s"${othersAttr}><span class="dot" style="background:${colors[i%colors.length]}"></span><span style="flex:1" title="${esc(k)}">${esc(k)}${others?` <span class="others-hint" title="悬停查看被折叠的模型">▾</span>`:''}</span><b>${fmt(v)} ${metricLabel}</b><span>${(v/total*100).toFixed(1)}%</span></div>`
+    return `<div class="legend-item${others?' has-others':''}" data-i="${i}" style="animation-delay:${0.08+i*0.035}s"${othersAttr}><span class="dot" style="background:${colors[i%colors.length]}"></span><span style="flex:1" title="${esc(k)}">${esc(k)}${others?` <span class="others-hint" title="悬停查看被折叠的模型">▾</span>`:''}</span><b>${fmt(v)} ${metricLabel}</b><span>${(v/total*100).toFixed(1)}%</span></div>`
   }).join('')}</div></div>`;
   bindOthersHover();
 }
 function compact(n){
   n=Number(n||0);
-  if(n>=1e9)return (n/1e9).toFixed(2).replace(/\.00$/,'')+'B';
-  if(n>=1e6)return (n/1e6).toFixed(2).replace(/\.00$/,'')+'M';
+  if(n>=1e9)return (n/1e9).toFixed(2).replace(/(\.\d*?)0+$/,'$1').replace(/\.$/,'')+'B';
+  if(n>=1e6)return (n/1e6).toFixed(2).replace(/(\.\d*?)0+$/,'$1').replace(/\.$/,'')+'M';
   if(n>=1e3)return (n/1e3).toFixed(1).replace(/\.0$/,'')+'K';
   return fmt(Math.round(n));
 }
@@ -795,9 +858,13 @@ function renderTrend(){
   const padL=70,padR=34,padT=24,padB=42;
   const values=data.map(r=>Number(r[metric]||0));
   const maxRaw=Math.max(1,...values);
-  const magnitude=Math.pow(10,Math.floor(Math.log10(maxRaw)));
-  const niceStep=Math.max(1,Math.ceil(maxRaw/4/magnitude)*magnitude);
-  const max=Math.max(niceStep*4,maxRaw);
+  const rawStep=maxRaw/4;
+  const stepMag=Math.pow(10,Math.floor(Math.log10(rawStep)));
+  const stepF=rawStep/stepMag;
+  const niceStepF=stepF<=1?1:stepF<=2?2:stepF<=2.5?2.5:stepF<=5?5:10;
+  let niceStep=niceStepF*stepMag;
+  let max=niceStep*4;
+  while(max<maxRaw){niceStep*=2;max=niceStep*4;}
   const yTicks=[0,1,2,3,4].map(i=>i*max/4);
   const x0=padL,x1=W-padR,y0=H-padB,y1=padT;
   const pts=data.map((r,i)=>[
@@ -811,6 +878,7 @@ function renderTrend(){
   const avg=values.reduce((a,b)=>a+b,0)/Math.max(1,values.length);
   const peak=Math.max(...values);
   const peakIdx=values.indexOf(peak);
+  const peakIsLast=peakIdx===data.length-1;
 
   $('trend').innerHTML=`<div class="trend-wrap"><div class="trend-tip" id="trendTip"></div><svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="font-family:'SF Pro Display','SF Pro Text',Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
     <defs>
@@ -847,13 +915,13 @@ function renderTrend(){
       ${pts.map((p,i)=>`<circle class="trend-hit" cx="${p[0]}" cy="${p[1]}" r="14" fill="transparent" data-i="${i}"></circle><circle class="trend-dot" cx="${p[0]}" cy="${p[1]}" r="3" fill="var(--surface)" stroke="var(--primary)" stroke-width="2" style="animation-delay:${0.28+i*0.018}s"></circle>`).join('')}
     </g>
     <g>
-      <circle class="trend-mark" cx="${pts[peakIdx][0]}" cy="${pts[peakIdx][1]}" r="5" fill="var(--primary)" opacity=".95"/>
-      <text x="${pts[peakIdx][0]}" y="${Math.max(14,pts[peakIdx][1]-12)}" text-anchor="middle" fill="var(--primary)" font-size="11" font-weight="650">峰值 ${compact(peak)}</text>
+      ${peakIsLast?'':`<circle class="trend-mark" cx="${pts[peakIdx][0]}" cy="${pts[peakIdx][1]}" r="5" fill="var(--primary)" opacity=".95"/>
+      <text x="${(last[0]-pts[peakIdx][0])<110?pts[peakIdx][0]-8:pts[peakIdx][0]}" y="${Math.max(14,pts[peakIdx][1]-12)}" text-anchor="${(last[0]-pts[peakIdx][0])<110?'end':'middle'}" fill="var(--primary)" font-size="11" font-weight="650">峰值 ${compact(peak)}</text>`}
       <circle class="trend-mark" cx="${last[0]}" cy="${last[1]}" r="5" fill="var(--surface)" stroke="var(--primary)" stroke-width="2.5"/>
       <rect x="${Math.min(last[0]-44,W-108)}" y="${Math.max(8,last[1]-34)}" width="88" height="24" rx="12" fill="var(--soft)" stroke="var(--border)"/>
       <text x="${Math.min(last[0],W-64)}" y="${Math.max(24,last[1]-18)}" text-anchor="middle" fill="var(--primary)" font-size="11" font-weight="650">${compact(lastVal)} ${metricUnit}</text>
     </g>
-    <text x="${x1}" y="${padT}" text-anchor="end" fill="var(--subtle)" font-size="11">均值 ${compact(avg)} ${metricUnit}</text>
+    <text x="${last[1]<74?x1-120:x1}" y="${padT}" text-anchor="end" fill="var(--subtle)" font-size="11">均值 ${compact(avg)} ${metricUnit}</text>
   </svg></div>`;
 
   const wrap=$('trend').querySelector('.trend-wrap');
@@ -937,11 +1005,29 @@ function bindOthersHover(){
     item.setAttribute('tabindex','0');
   });
 }
-function renderTable(){
+function renderTable(opts){
+  opts=opts||{};
   const data=sortedTableRows();
   updateTableSortButtons();
   $('tableHint').textContent=`${data.length} 条 · 按 ${tableSortLabel()} ${tableSortDir==='asc'?'升序':'降序'} · 最多显示 10 条，滚动查看更多`;
-  $('table').innerHTML=`<thead><tr><th>平台</th><th>会话 ID</th><th class="right">轮数</th><th class="right">用户消息</th><th class="right">Bot 消息</th><th class="right">输入 Token</th><th class="right">输出 Token</th><th class="right">总 Token</th></tr></thead><tbody>${data.map((r,i)=>`<tr style="animation-delay:${Math.min(i,10)*0.018}s"><td>${esc(r.platform_id)}</td><td title="${esc(r.session_id)}">${esc(r.session_id)}</td><td class="right">${fmt(r.round_count)}</td><td class="right">${fmt(r.user_message_count)}</td><td class="right">${fmt(r.bot_message_count)}</td><td class="right">${fmt(r.input_tokens)}</td><td class="right">${fmt(r.output_tokens)}</td><td class="right"><b>${fmt(r.total_tokens)}</b></td></tr>`).join('')||`<tr><td colspan="8"><div class="empty">没有匹配的数据</div></td></tr>`}</tbody>`
+  const tableEl=$('table');
+  const oldTbody=tableEl.querySelector('tbody');
+  const oldPos=new Map();
+  const doFlip=!REDUCED&&!!opts.flip&&oldTbody;
+  if(doFlip)oldTbody.querySelectorAll('tr[data-key]').forEach(tr=>oldPos.set(tr.dataset.key,tr.getBoundingClientRect().top));
+  const rowAnim=i=>doFlip?'animation:none':`animation-delay:${Math.min(i,10)*0.018}s`;
+  tableEl.innerHTML=`<thead><tr><th>平台</th><th>会话 ID</th><th class="right">轮数</th><th class="right">用户消息</th><th class="right">Bot 消息</th><th class="right">输入 Token</th><th class="right">输出 Token</th><th class="right">总 Token</th></tr></thead><tbody>${data.map((r,i)=>`<tr data-key="${esc(r.platform_id)}|${esc(r.session_id)}" style="${rowAnim(i)}"><td>${esc(r.platform_id)}</td><td title="${esc(r.session_id)}">${esc(r.session_id)}</td><td class="right">${fmt(r.round_count)}</td><td class="right">${fmt(r.user_message_count)}</td><td class="right">${fmt(r.bot_message_count)}</td><td class="right">${fmt(r.input_tokens)}</td><td class="right">${fmt(r.output_tokens)}</td><td class="right"><b>${fmt(r.total_tokens)}</b></td></tr>`).join('')||`<tr><td colspan="8"><div class="empty">没有匹配的数据</div></td></tr>`}</tbody>`
+  if(doFlip){
+    tableEl.querySelectorAll('tbody tr[data-key]').forEach(tr=>{
+      const o=oldPos.get(tr.dataset.key);
+      if(o==null)return;
+      const d=o-tr.getBoundingClientRect().top;
+      if(!d)return;
+      tr.style.transition='none';
+      tr.style.transform=`translateY(${d}px)`;
+      requestAnimationFrame(()=>{tr.style.transition='transform .32s cubic-bezier(.2,.8,.2,1)';tr.style.transform='';});
+    });
+  }
 }
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));b.classList.add('on');currentTab=b.dataset.t;load(currentTab)});
 document.querySelectorAll('#platformMetricSwitch button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#platformMetricSwitch button').forEach(x=>x.classList.remove('on'));b.classList.add('on');platformMetric=b.dataset.m;renderDonut()});
@@ -949,8 +1035,8 @@ document.querySelectorAll('#modelScopeSwitch button').forEach(b=>b.onclick=async
 document.querySelectorAll('#modelMetricSwitch button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#modelMetricSwitch button').forEach(x=>x.classList.remove('on'));b.classList.add('on');modelMetric=b.dataset.m;renderModelDonut()});
 document.querySelectorAll('#topMetricSwitch button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#topMetricSwitch button').forEach(x=>x.classList.remove('on'));b.classList.add('on');topMetric=b.dataset.m;renderTopBars()});
 document.querySelectorAll('#trendMetricSwitch button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#trendMetricSwitch button').forEach(x=>x.classList.remove('on'));b.classList.add('on');trendMetric=b.dataset.m;renderTrend()});
-document.querySelectorAll('#tableSortSwitch button').forEach(b=>b.onclick=()=>{const m=b.dataset.sort;if(tableSortMetric===m){tableSortDir=tableSortDir==='desc'?'asc':'desc'}else{tableSortMetric=m;tableSortDir='desc'}renderTable()});
-$('btn-refresh').onclick=()=>{dataCache.clear();modelStatsCache.clear();load(currentTab)}; $('search').oninput=e=>{query=e.target.value;renderTable()};
+document.querySelectorAll('#tableSortSwitch button').forEach(b=>b.onclick=()=>{const m=b.dataset.sort;if(tableSortMetric===m){tableSortDir=tableSortDir==='desc'?'asc':'desc'}else{tableSortMetric=m;tableSortDir='desc'}renderTable({flip:true})});
+$('btn-refresh').onclick=()=>{dataCache.clear();modelStatsCache.clear();load(currentTab)}; $('search').oninput=e=>{query=e.target.value;renderTable({flip:true})};
 let confirm=false,timer=null; $('btn-clear').onclick=async()=>{const btn=$('btn-clear'); if(!confirm){confirm=true;btn.textContent='再次点击确认清空';clearTimeout(timer);timer=setTimeout(()=>{confirm=false;btn.textContent='清空数据'},5000);return} confirm=false;clearTimeout(timer);btn.disabled=true;btn.textContent='清空中...';status('正在清空...','loading');try{const r=await apiPostRetry('page/clear',{});status('已清空，游标 '+(r?.last_message_id??'当前末尾'),'ok');await load(currentTab)}catch(e){status('清空失败: '+(e?.message||e),'err')}finally{btn.disabled=false;btn.textContent='清空数据'}};
 /* ===== 版本升级提示弹窗（首次/升级后展示一次，5秒强制等待后可关闭） ===== */
 /* 通过后端 API 存储已读状态，不受浏览器 iframe 沙箱限制 */
@@ -994,6 +1080,126 @@ try{(function(){
     document.body.appendChild(overlay);
   })();
 })();}catch(e){ /* 弹窗任何异常都不影响主加载流程 */ }
+
+
+// ==================== 用量限制与告警详细面板 ====================
+let limitsMode=false, limitsData=null;
+function setLimitsMode(on){
+  limitsMode=on;
+  document.querySelector('.tabs').style.display=on?'none':'';
+  $('summary').style.display=on?'none':'';
+  document.querySelector('.grid.layout').style.display=on?'none':'';
+  document.querySelector('.watermark').style.display=on?'none':'';
+  $('limitsView').style.display=on?'':'none';
+  $('btn-limits').textContent=on?'返回统计':'限制与告警';
+  $('pageTitle').textContent=on?'限制与告警仪表盘':'模型用量统计仪表盘';
+  if(on)loadLimits();else{zeroRollOnce=true;renderAll();}
+}
+async function loadLimits(){
+  status('加载中...','loading');
+  try{
+    const r=await apiGetRetry('page/limits');
+    if(!r||!r.ok)throw new Error((r&&r.error)||'接口返回异常');
+    limitsData=r;
+    renderLimits();
+    status('已更新','ok');
+  }catch(e){status('加载失败','error');alert('限制配置加载失败: '+e.message)}
+}
+function renderLimits(){
+  if(!limitsData)return;
+  const d=limitsData.defaults, unit=d.limit_mode==='rounds'?'轮':'Token', aunit=d.alert_mode==='rounds'?'轮':'Token';
+  $('limitsDefaults').innerHTML=[
+    ['限制总开关',d.limit_enabled?'开启':'关闭'],
+    ['限制模式',unit],
+    ['全局每日限制默认值',d.limit_global_default>0?fmt(d.limit_global_default)+' '+unit:'未启用'],
+    ['单会话每日限制默认',d.limit_session_default>0?fmt(d.limit_session_default)+' '+unit:'未启用'],
+    ['告警总开关',d.alert_enabled?'开启':'关闭'],
+    ['告警模式',aunit],
+    ['单会话每日告警默认值',d.alert_session_default>0?fmt(d.alert_session_default)+' '+aunit:'未启用'],
+    ['全局每日告警默认值',d.alert_daily_default>0?fmt(d.alert_daily_default)+' '+aunit:'未启用'],
+  ].map(x=>`<div><span>${x[0]}：</span><b>${x[1]}</b></div>`).join('');
+  renderLimitsTable();
+}
+function renderLimitsTable(){
+  if(!limitsData)return;
+  const q=($('limits-search').value||'').trim().toLowerCase();
+  const list=(limitsData.sessions||[]).map((s,i)=>({...s,__i:i})).filter(s=>!q||s.platform_id.toLowerCase().includes(q)||s.session_id.toLowerCase().includes(q));
+  $('limitsHint').textContent=`今日活跃会话 ${list.length} 个`;
+  if(!list.length){$('limitsTable').innerHTML='<tbody><tr><td style="padding:20px;color:var(--muted)">今日暂无活跃会话</td></tr></tbody>';return}
+  const head='<thead><tr><th>平台</th><th>会话 ID</th><th>今日Token</th><th>今日轮数</th><th>限制</th><th>限制值</th><th>告警</th><th>告警阈值</th><th>操作</th></tr></thead>';
+  const body=list.map(s=>{
+    const c=s.custom||{}, e=s.effective;
+    const sid=s.session_id.length>24?s.session_id.slice(0,24)+'…':s.session_id;
+    const lvPh=c.limit_value==null?('默认 '+(e.limit_value>0?fmt(e.limit_value):'不限')):'';
+    const avPh=c.alert_value==null?('默认 '+(e.alert_value>0?fmt(e.alert_value):'不告警')):'';
+    return `<tr>
+      <td>${esc(s.platform_id)}</td>
+      <td title="${esc(s.session_id)}">${esc(sid)}</td>
+      <td class="num">${fmt(s.today_tokens)}</td>
+      <td class="num">${fmt(s.today_rounds)}</td>
+      <td><label class="toggle"><input type="checkbox" data-row="${s.__i}" data-f="limit_enabled" ${e.limit_on?'checked':''}><i></i></label></td>
+      <td><input class="input limits-input" data-row="${s.__i}" data-f="limit_value" type="number" min="0" placeholder="${lvPh}" value="${c.limit_value??''}"/></td>
+      <td><label class="toggle"><input type="checkbox" data-row="${s.__i}" data-f="alert_enabled" ${e.alert_on?'checked':''}><i></i></label></td>
+      <td><input class="input limits-input" data-row="${s.__i}" data-f="alert_value" type="number" min="0" placeholder="${avPh}" value="${c.alert_value??''}"/></td>
+      <td style="white-space:nowrap"><button class="btn" style="padding:5px 10px;font-size:12px" data-save="${s.__i}">保存</button>${c?` <button class="btn danger" style="padding:5px 10px;font-size:12px" data-reset="${s.__i}">恢复默认</button>`:''}</td>
+    </tr>`;
+  }).join('');
+  $('limitsTable').innerHTML=head+`<tbody>${body}</tbody>`;
+}
+$('btn-limits').addEventListener('click',()=>setLimitsMode(!limitsMode));
+$('limits-search').addEventListener('input',renderLimitsTable);
+$('btn-refresh').addEventListener('click',()=>{if(limitsMode)loadLimits()});
+$('limitsTable').addEventListener('change',ev=>{
+  const el=ev.target;
+  if(el.dataset&&el.dataset.f)el.dataset.touched='1';
+});
+$('limitsTable').addEventListener('click',async ev=>{
+  const saveBtn=ev.target.closest('[data-save]'), resetBtn=ev.target.closest('[data-reset]');
+  if(!saveBtn&&!resetBtn)return;
+  const i=+(saveBtn?saveBtn.dataset.save:resetBtn.dataset.reset);
+  const s=(limitsData&&limitsData.sessions[i])||null;
+  if(!s)return;
+  const payload={platform_id:s.platform_id,session_id:s.session_id};
+  if(resetBtn){
+    Object.assign(payload,{limit_enabled:null,limit_value:null,alert_enabled:null,alert_value:null});
+  }else{
+    const cells=$('limitsTable').querySelectorAll(`[data-row="${i}"]`);
+    const c=s.custom||{};
+    const fields={limit_enabled:null,limit_value:null,alert_enabled:null,alert_value:null};
+    cells.forEach(el=>{
+      const f=el.dataset.f;
+      if(f==='limit_enabled'||f==='alert_enabled'){
+        fields[f]=el.dataset.touched?(el.checked?1:0):(c[f]??null);
+      }else{
+        const v=String(el.value||'').trim();
+        fields[f]=v===''?(c[f]??null):Math.max(0,parseInt(v,10)||0);
+      }
+    });
+    Object.assign(payload,fields);
+  }
+  try{
+    const r=await apiPostRetry('page/limits_save',payload);
+    if(!r||!r.ok)throw new Error((r&&r.error)||'保存失败');
+    await loadLimits();
+    status('已保存','ok');
+  }catch(e){alert('保存失败: '+e.message)}
+});
+
+/* ===== 圆环 hover 联动：色块 ↔ 图例互相高亮 ===== */
+function clearDonutHL(box){box.querySelectorAll('path.donut-arc.dim').forEach(x=>x.classList.remove('dim'));box.querySelectorAll('.legend-item.hl').forEach(x=>x.classList.remove('hl'))}
+document.addEventListener('mouseover',e=>{
+  const t=e.target;
+  if(!t||!t.closest)return;
+  const inBox=t.closest('.donut-wrap');
+  document.querySelectorAll('.donut-wrap').forEach(box=>{
+    if(box!==inBox){clearDonutHL(box);return}
+    const arc=t.closest('path.donut-arc[data-i]');
+    const li=t.closest('.legend-item[data-i]');
+    const i=arc?arc.dataset.i:(li?li.dataset.i:null);
+    box.querySelectorAll('path.donut-arc[data-i]').forEach(x=>x.classList.toggle('dim',i!=null&&x.dataset.i!==i));
+    box.querySelectorAll('.legend-item[data-i]').forEach(x=>x.classList.toggle('hl',i!=null&&x.dataset.i===i));
+  });
+});
 
 bridge.ready().then(()=>load(currentTab));
 </script>

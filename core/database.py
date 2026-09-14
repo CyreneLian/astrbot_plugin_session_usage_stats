@@ -109,6 +109,29 @@ class DatabaseManager:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_bucket ON model_usage_stats(bucket_type, bucket_key, model_name, provider_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_call_bucket ON model_call_stats(bucket_type, bucket_key, model_name, provider_name)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS alert_cooldown (
+                    key TEXT PRIMARY KEY,
+                    day TEXT NOT NULL,
+                    updated_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_limits (
+                    platform_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    limit_enabled INTEGER,
+                    limit_value INTEGER,
+                    alert_enabled INTEGER,
+                    alert_value INTEGER,
+                    updated_at TEXT,
+                    PRIMARY KEY (platform_id, session_id)
+                )
+                """
+            )
             conn.commit()
         finally:
             conn.close()
@@ -190,6 +213,128 @@ class DatabaseManager:
                 ("alert_sent_state", 0, state_json),
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    def get_session_limit(self, platform_id: str, session_id: str):
+        """查询单会话的自定义限制/告警配置；无记录返回 None（表示跟随插件默认值）"""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            row = conn.execute(
+                "SELECT limit_enabled, limit_value, alert_enabled, alert_value "
+                "FROM session_limits WHERE platform_id = ? AND session_id = ?",
+                (platform_id, session_id),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "limit_enabled": None if row[0] is None else int(row[0]),
+                "limit_value": None if row[1] is None else int(row[1]),
+                "alert_enabled": None if row[2] is None else int(row[2]),
+                "alert_value": None if row[3] is None else int(row[3]),
+            }
+        finally:
+            conn.close()
+
+    def upsert_session_limit(self, platform_id: str, session_id: str,
+                             limit_enabled, limit_value, alert_enabled, alert_value):
+        """写入/更新单会话配置。字段传 None 表示该项跟随插件默认值；
+        四项全 None 时直接删除该行（完全恢复默认）。"""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            if limit_enabled is None and limit_value is None and alert_enabled is None and alert_value is None:
+                conn.execute(
+                    "DELETE FROM session_limits WHERE platform_id = ? AND session_id = ?",
+                    (platform_id, session_id),
+                )
+            else:
+                now = datetime.now().isoformat(timespec="seconds")
+                conn.execute(
+                    """
+                    INSERT INTO session_limits(platform_id, session_id, limit_enabled, limit_value, alert_enabled, alert_value, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(platform_id, session_id) DO UPDATE SET
+                        limit_enabled=excluded.limit_enabled,
+                        limit_value=excluded.limit_value,
+                        alert_enabled=excluded.alert_enabled,
+                        alert_value=excluded.alert_value,
+                        updated_at=excluded.updated_at
+                    """,
+                    (platform_id, session_id, limit_enabled, limit_value, alert_enabled, alert_value, now),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_session_limits(self) -> dict:
+        """列出全部单会话自定义配置：{(platform_id, session_id): {...}}"""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            rows = conn.execute(
+                "SELECT platform_id, session_id, limit_enabled, limit_value, alert_enabled, alert_value "
+                "FROM session_limits"
+            ).fetchall()
+            return {
+                (str(r[0]), str(r[1])): {
+                    "limit_enabled": None if r[2] is None else int(r[2]),
+                    "limit_value": None if r[3] is None else int(r[3]),
+                    "alert_enabled": None if r[4] is None else int(r[4]),
+                    "alert_value": None if r[5] is None else int(r[5]),
+                }
+                for r in rows
+            }
+        finally:
+            conn.close()
+
+    def claim_alert_cooldowns(self, keys, day: str) -> list:
+        """原子抢占告警冷却：同一 key 同一自然日只有首次抢占成功。
+
+        利用 INSERT ... ON CONFLICT DO UPDATE ... WHERE day != excluded.day：
+        插入成功 / 跨天更新成功 → rowcount=1（抢占成功）；
+        当日已存在 → WHERE 不命中 → rowcount=0（今天已发过，跳过）。
+        多实例 / 多循环并发下也仅一个能抢到，杜绝重复发送。
+        """
+        if not keys:
+            return []
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            now = datetime.now().isoformat(timespec="seconds")
+            claimed = []
+            for key in keys:
+                cur = conn.execute(
+                    """
+                    INSERT INTO alert_cooldown(key, day, updated_at) VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        day=excluded.day, updated_at=excluded.updated_at
+                    WHERE alert_cooldown.day IS NULL OR alert_cooldown.day != excluded.day
+                    """,
+                    (key, day, now),
+                )
+                if cur.rowcount == 1:
+                    claimed.append(key)
+            conn.commit()
+            return claimed
+        finally:
+            conn.close()
+
+    def release_alert_cooldowns(self, keys):
+        """发送失败后释放冷却抢占，让下次检查可重试（保留「失败不标记冷却」约定）"""
+        if not keys:
+            return
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            for key in keys:
+                conn.execute("DELETE FROM alert_cooldown WHERE key = ?", (key,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_alert_cooldowns(self) -> dict:
+        """查询全部原子冷却抢占记录（诊断用）"""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            rows = conn.execute("SELECT key, day, updated_at FROM alert_cooldown").fetchall()
+            return {str(r[0]): {"day": str(r[1]), "updated_at": str(r[2])} for r in rows}
         finally:
             conn.close()
 

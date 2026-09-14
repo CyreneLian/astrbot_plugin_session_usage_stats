@@ -1,5 +1,5 @@
 """
-AstrBot 模型用量统计插件 v2.2.0
+AstrBot 模型用量统计插件 v3.0.0
 
 功能描述：
 - 统计全部模型的调用次数、Token 消耗和趋势排行
@@ -7,7 +7,7 @@ AstrBot 模型用量统计插件 v2.2.0
 - 支持低开销增量扫描与自动清理
 
 作者: 往昔的涟漪
-版本: 2.2.0
+版本: 3.0.0
 日期: 2026-08-07
 """
 
@@ -41,14 +41,14 @@ from .core.api import ApiHandler
     "astrbot_plugin_session_usage_stats",
     "往昔的涟漪",
     "统计全部模型调用次数、Token 消耗与趋势排行，支持每日用量告警推送",
-    "2.2.0",
+    "3.0.0",
     "https://github.com/CyreneLian/astrbot_plugin_session_usage_stats",
 )
 class SessionUsageStatsPlugin(Star):
     """模型用量统计插件主类"""
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        # 兼容分组配置（用量统计设置 / 用量告警设置）：
+        # 兼容分组配置（用量统计设置 / 用量告警默认设置）：
         # 将各分组内的配置项摊平到顶层，便于各处按原键名读取，同时兼容旧的扁平配置。
         # 注意：必须通过「创建新字典」合并，绝不能修改传入的 config 对象本身，
         # 否则会污染 AstrBot 共享的 AstrBotConfig 实例，导致配置面板渲染出多余的扁平配置项。
@@ -81,10 +81,15 @@ class SessionUsageStatsPlugin(Star):
         self.auto_cleanup_enabled = self.plugin_config.auto_cleanup_enabled
         self.auto_cleanup_retention_days = self.plugin_config.auto_cleanup_retention_days
         self.alert_enabled = self.plugin_config.alert_enabled
-        self.alert_daily_token_threshold = self.plugin_config.alert_daily_token_threshold
-        self.alert_session_token_threshold = self.plugin_config.alert_session_token_threshold
+        self.alert_mode = self.plugin_config.alert_mode
+        self.alert_daily_threshold = self.plugin_config.alert_daily_threshold
+        self.alert_session_threshold = self.plugin_config.alert_session_threshold
         self.alert_target_id = self.plugin_config.alert_target_id
         self.alert_check_interval_minutes = self.plugin_config.alert_check_interval_minutes
+        self.limit_enabled = self.plugin_config.limit_enabled
+        self.limit_mode = self.plugin_config.limit_mode
+        self.limit_session_default = self.plugin_config.limit_session_default
+        self.limit_global_default = self.plugin_config.limit_global_default
 
         self._alert_task: Optional[asyncio.Task] = None
         self._alert_sent_state: Dict[str, str] = {}
@@ -107,6 +112,7 @@ class SessionUsageStatsPlugin(Star):
         self._scan_lock = asyncio.Lock()
         self._last_query_scan_ts = 0.0
         self._stopping = False
+        self._initialized = False
 
         # 初始化数据目录与数据库管理器
         try:
@@ -123,6 +129,10 @@ class SessionUsageStatsPlugin(Star):
 
     async def initialize(self):
         """插件激活初始化"""
+        # 防重入：热重载异常路径可能重复调用，避免残留多个后台任务（告警循环等）
+        if self._initialized:
+            return
+        self._initialized = True
         if self.auto_cleanup_enabled:
             await self._cleanup_old_data(reason="startup")
         
@@ -630,6 +640,103 @@ class SessionUsageStatsPlugin(Star):
         return str(platform_id), str(session_id), created_at
 
 
+    # ==================== 用量限制 ====================
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def usage_limit_guard(self, event: AstrMessageEvent):
+        """用量限制守门人：会话/全局每日用量超限时直接拒绝响应。
+
+        仅拦截会触发模型回复的消息；「会话统计」系列指令豁免，保证管理员始终可查询。
+        超限提示每次都会发送（不做静默）。每日 00:00（北京时间）自然日重置。
+        """
+        if not self.limit_enabled:
+            return
+        if not event.is_at_or_wake_command:
+            return
+        text = (event.get_message_str() or "").strip()
+        # 指令类消息豁免：
+        # ① 「会话统计」系列（本插件指令，无斜杠形式）
+        # ② 命中任何已注册指令 handler（filter.command 及其别名）：
+        #    斜杠前缀会被事件层剥离，startswith("/") 不可靠，
+        #    改查 activated_handlers 里的指令过滤器（含 command_name 的 HandlerFilter）
+        if text.startswith("会话统计"):
+            return
+        try:
+            _handlers = event.get_extra("activated_handlers") or []
+            for _h in _handlers:
+                for _f in (getattr(_h, "event_filters", None) or []):
+                    if getattr(_f, "command_name", None) is not None:
+                        return
+        except Exception:
+            pass
+        # 空消息放行：表情/语音/撤回/回执等 text 解析为空的（含回环的 ⛔ 回推）不触发限制提示，
+        # 从根上掐断「一条消息触发多条 ⛔」的套娃
+        if not text:
+            return
+        try:
+            platform_id, session_id = self._detect_platform_and_session(event)
+            block_msg = await self._check_usage_limit(platform_id, session_id)
+        except Exception as e:
+            logger.warning(f"[session_usage_stats] 用量限制检查异常（本次放行）: {e}")
+            return
+        if block_msg:
+            yield event.plain_result(block_msg)
+            event.stop_event()
+
+    async def _check_usage_limit(self, platform_id: str, session_id: str) -> Optional[str]:
+        """检查全局/单会话当日用量限制，超限返回拒绝提示文案，未超限返回 None。"""
+        field = "total_tokens" if self.limit_mode == "token" else "round_count"
+        unit = "Token" if self.limit_mode == "token" else "轮"
+
+        from zoneinfo import ZoneInfo
+        cst = ZoneInfo("Asia/Shanghai")
+        today = datetime.now(cst).strftime("%Y-%m-%d")
+
+        def _query():
+            conn = sqlite3.connect(self.db_path, timeout=10)
+            try:
+                g = conn.execute(
+                    f"SELECT COALESCE(SUM({field}),0) FROM usage_stats WHERE bucket_type='day' AND bucket_key=?",
+                    (today,),
+                ).fetchone()[0] or 0
+                s = conn.execute(
+                    f"SELECT COALESCE(SUM({field}),0) FROM usage_stats "
+                    "WHERE bucket_type='day' AND bucket_key=? AND platform_id=? AND session_id=?",
+                    (today, platform_id, session_id),
+                ).fetchone()[0] or 0
+                return int(g), int(s)
+            finally:
+                conn.close()
+
+        global_used, session_used = await self.db.run_async(_query)
+
+        # ① 全局每日限制（填 0 不启用）
+        if self.limit_global_default > 0 and global_used > self.limit_global_default:
+            return (
+                f"⛔ 今日全局用量已达限制（{global_used:,} / {self.limit_global_default:,} {unit}），"
+                f"模型调用将在明天 00:00（北京时间）恢复。"
+            )
+
+        # ② 单会话限制（面板可豁免本会话 / 覆盖阈值 / 单独启用，未设置则跟随插件默认）
+        try:
+            override = self.db.get_session_limit(platform_id, session_id)
+        except Exception:
+            override = None
+        session_on = True
+        session_limit = self.limit_session_default
+        if override:
+            if override.get("limit_enabled") is not None:
+                session_on = bool(override["limit_enabled"])
+            if override.get("limit_value") is not None:
+                session_limit = override["limit_value"]
+        if session_on and session_limit > 0 and session_used > session_limit:
+            return (
+                f"⛔ 本会话今日用量已达限制（{session_used:,} / {session_limit:,} {unit}），"
+                f"将在明天 00:00（北京时间）恢复。"
+            )
+        return None
+
+
     @filter.on_agent_done()
     async def capture_bot_response(
         self,
@@ -1125,7 +1232,12 @@ class SessionUsageStatsPlugin(Star):
                 await asyncio.sleep(1)
 
     async def _check_and_send_alerts(self):
-        """检查每日用量并发送告警消息（全局超限 + 单会话超限，同类型同天仅告警一次）"""
+        """检查每日用量并发送告警消息（全局超限 + 单会话超限）。
+
+        冷却去重采用数据库原子抢占（alert_cooldown 表）：同一告警 key 同一自然日
+        仅第一个抢占成功的检查循环能发送——即使热重载残留多实例 / 多循环并发
+        也不会重复发送；发送失败则释放抢占，下次检查拿实时数据重试（不标记冷却）。
+        """
         if not self.alert_enabled:
             return
         if not self.alert_target_id:
@@ -1149,18 +1261,25 @@ class SessionUsageStatsPlugin(Star):
             self._alert_sent_state.clear()
             self._alert_last_date = today
 
+        # 告警模式：token=按每日 Token 用量；rounds=按每日对话轮数（一问一答算一轮）
+        alert_mode = getattr(self, "alert_mode", "token")
+        metric_field = "total_tokens" if alert_mode != "rounds" else "round_count"
+        metric_unit = "Token" if alert_mode != "rounds" else "轮"
+        daily_threshold = self.alert_daily_threshold
+        session_default_threshold = self.alert_session_threshold
+
         def _query_daily():
             conn = sqlite3.connect(self.db_path, timeout=10)
             try:
                 global_total = conn.execute(
-                    "SELECT COALESCE(SUM(total_tokens),0) FROM usage_stats "
+                    f"SELECT COALESCE(SUM({metric_field}),0) FROM usage_stats "
                     "WHERE bucket_type='day' AND bucket_key=?",
                     (today,),
                 ).fetchone()[0] or 0
                 session_rows = conn.execute(
-                    "SELECT platform_id, session_id, SUM(total_tokens) as tokens FROM usage_stats "
+                    f"SELECT platform_id, session_id, SUM({metric_field}) as used FROM usage_stats "
                     "WHERE bucket_type='day' AND bucket_key=? "
-                    "GROUP BY platform_id, session_id HAVING tokens > 0",
+                    "GROUP BY platform_id, session_id HAVING used > 0",
                     (today,),
                 ).fetchall()
                 return int(global_total), session_rows
@@ -1169,45 +1288,72 @@ class SessionUsageStatsPlugin(Star):
 
         global_total, session_rows = await self.db.run_async(_query_daily)
 
-        messages: List[str] = []
-        _sent_keys: List[str] = []  # 待标记的冷却 key（发送成功后才写入）
+        # 单会话自定义覆盖（面板设置优先，未设置跟随插件默认）
+        try:
+            session_overrides = self.db.list_session_limits()
+        except Exception:
+            session_overrides = {}
 
-        # ① 全局每日用量告警
-        if self.alert_daily_token_threshold > 0 and global_total > self.alert_daily_token_threshold and self._alert_sent_state.get("global") != today:
-            messages.append(
+        # 候选告警（key, 内容）；是否发送以数据库原子抢占结果为准
+        global_msg = None
+        if daily_threshold > 0 and global_total > daily_threshold:
+            global_msg = (
                 f"⚠️ 模型用量全局告警（{today}）\n"
-                f"全局累计消耗：{global_total:,} Token\n"
-                f"告警阈值：{self.alert_daily_token_threshold:,} Token"
+                f"全局累计消耗：{global_total:,} {metric_unit}\n"
+                f"告警阈值：{daily_threshold:,} {metric_unit}"
             )
-            _sent_keys.append("global")
-
-        # ② 单会话每日用量告警
-        over_limit: List[Tuple[str, str, int]] = []
+        candidates: List[Tuple[str, str]] = []
+        if global_msg is not None:
+            candidates.append(("global", global_msg))
         for row in session_rows:
-            platform_id, session_id, tokens = str(row[0]), str(row[1]), int(row[2])
-            if self.alert_session_token_threshold > 0 and tokens > self.alert_session_token_threshold:
-                key = f"session:{platform_id}:{session_id}"
-                if self._alert_sent_state.get(key) != today:
-                    over_limit.append((platform_id, session_id, tokens))
-                    _sent_keys.append(key)
+            platform_id, session_id, used = str(row[0]), str(row[1]), int(row[2])
+            override = session_overrides.get((platform_id, session_id)) or {}
+            # 会话级告警开关：0=豁免该会话；None=跟随总开关（总开关关闭时整段循环不会执行到这里）
+            if override.get("alert_enabled") is not None and not override["alert_enabled"]:
+                continue
+            threshold = override.get("alert_value")
+            if threshold is None:
+                threshold = session_default_threshold
+            if threshold and threshold > 0 and used > threshold:
+                candidates.append((
+                    f"session:{platform_id}:{session_id}",
+                    f"• {platform_id} / {session_id}：{used:,} {metric_unit}（阈值 {threshold:,}）",
+                ))
 
-        if over_limit:
-            lines = [
-                f"⚠️ 单会话用量告警（{today}）",
-                f"告警阈值：{self.alert_session_token_threshold:,} Token/会话",
-                "",
-            ]
-            for platform_id, session_id, tokens in over_limit[:20]:
-                lines.append(f"• {platform_id} / {session_id}：{tokens:,} Token")
-            if len(over_limit) > 20:
-                lines.append(f"… 等共 {len(over_limit)} 个会话超限")
-            messages.append("\n".join(lines))
+        if not candidates:
+            self._alert_last_check = datetime.now(cst).strftime("%Y-%m-%d %H:%M:%S")
+            return
+
+        # 数据库原子抢占冷却：同一 key 同一自然日仅第一个抢占成功者可发送
+        _claimed = await self.db.run_async(
+            self.db.claim_alert_cooldowns, [k for k, _ in candidates], today
+        )
+        _claimed_set = set(_claimed)
+        if not _claimed_set:
+            self._alert_last_check = datetime.now(cst).strftime("%Y-%m-%d %H:%M:%S")
+            return
+
+        messages: List[str] = []
+        if global_msg is not None and "global" in _claimed_set:
+            messages.append(global_msg)
+        session_lines = [
+            line for key, line in candidates
+            if key != "global" and key in _claimed_set
+        ]
+        if session_lines:
+            header = (
+                f"⚠️ 单会话用量告警（{today}）\n"
+                f"告警阈值：{session_default_threshold:,} {metric_unit}/会话（面板自定义覆盖优先）"
+            )
+            block = header + "\n\n" + "\n".join(session_lines[:20])
+            if len(session_lines) > 20:
+                block += f"\n… 等共 {len(session_lines)} 个会话超限"
+            messages.append(block)
 
         if not messages:
             self._alert_last_check = datetime.now(cst).strftime("%Y-%m-%d %H:%M:%S")
             return
 
-        # 记录检查时间（确保即使发送失败，诊断也能看到）
         self._alert_last_check = datetime.now(cst).strftime("%Y-%m-%d %H:%M:%S")
         # 发送告警到每个目标（QQ 号私聊；g: 前缀的群号发送到群聊）
         # 注意：aiocqhttp 平台的 meta.id 取自平台配置里的 id 字段（可能是自定义值，如「往昔的涟漪」），
@@ -1245,14 +1391,20 @@ class SessionUsageStatsPlugin(Star):
             except Exception as e:
                 logger.warning(f"[session_usage_stats] 告警消息发送失败: {e}", exc_info=True)
 
-        # 发送成功后才标记冷却记录（失败时下次检查重新拿实时数据合并发送）
         if _sent_ok:
-            for key in _sent_keys:
+            # 发送成功：同步内存态（诊断展示用），并持久化旧格式冷却记录保持兼容
+            for key in _claimed_set:
                 self._alert_sent_state[key] = today
             try:
                 self.db.set_alert_sent_state(self._alert_sent_state)
             except Exception:
                 pass
+        else:
+            # 发送失败：释放原子抢占，下次检查拿实时数据重试（不标记冷却）
+            try:
+                await self.db.run_async(self.db.release_alert_cooldowns, list(_claimed_set))
+            except Exception as e:
+                logger.warning(f"[session_usage_stats] 释放告警冷却抢占失败: {e}", exc_info=True)
 
     async def _model_call_flush_loop(self):
         await asyncio.sleep(5)
@@ -1657,11 +1809,24 @@ class SessionUsageStatsPlugin(Star):
             pass
         lines.append(f"  QQ 平台 id：{_pid}")
         lines.append(f"  告警目标：{self.alert_target_id or '未配置'}")
+        _aunit = "轮" if getattr(self, "alert_mode", "token") == "rounds" else "Token"
         lines.append(
-            f"  阈值：全局 {self.alert_daily_token_threshold:,} / 单会话 {self.alert_session_token_threshold:,} Token"
+            f"  模式：{'轮数' if _aunit == '轮' else 'Token'} | 阈值：全局 {self.alert_daily_threshold:,} / 单会话 {self.alert_session_threshold:,} {_aunit}"
         )
         lines.append(f"  检查间隔：{self.alert_check_interval_minutes} 分钟")
         lines.append(f"  冷却记录：{dict(self._alert_sent_state) if self._alert_sent_state else '无'}")
+        # 用量限制状态块
+        lines.append("\n🚦 用量限制状态")
+        lines.append(f"  总开关：{'✅ 开启' if self.limit_enabled else '❌ 关闭'}")
+        _lunit = "轮" if self.limit_mode == "rounds" else "Token"
+        lines.append(f"  模式：{self.limit_mode}（{_lunit}）")
+        lines.append(f"  全局每日限制：{self.limit_global_default:,} {_lunit}{'（未启用）' if self.limit_global_default <= 0 else ''}")
+        lines.append(f"  单会话默认限制：{self.limit_session_default:,} {_lunit}{'（未启用）' if self.limit_session_default <= 0 else ''}")
+        try:
+            _n = len(self.db.list_session_limits())
+            lines.append(f"  面板自定义会话：{_n} 个")
+        except Exception:
+            pass
         yield event.plain_result("\n".join(lines))
 
     @filter.permission_type(PermissionType.ADMIN)

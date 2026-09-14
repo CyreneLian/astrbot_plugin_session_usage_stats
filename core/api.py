@@ -50,6 +50,18 @@ class ApiHandler:
             ["POST"],
             "升级提示确认已读"
         )
+        self.plugin.context.register_web_api(
+            "/astrbot_plugin_session_usage_stats/page/limits",
+            self._api_limits,
+            ["GET"],
+            "用量限制与告警详细设置查询"
+        )
+        self.plugin.context.register_web_api(
+            "/astrbot_plugin_session_usage_stats/page/limits_save",
+            self._api_limits_save,
+            ["POST"],
+            "保存单会话用量限制与告警设置"
+        )
 
     async def _api_stats(self):
         bucket_type = qreq.args.get("bucket_type", "day")
@@ -288,3 +300,99 @@ class ApiHandler:
             return jsonify({"ok": True, "deleted_usage": 0, "deleted_model_usage": 0, "deleted_model_call": 0, "vacuumed": vacuumed})
         except Exception as e:
             return jsonify(self.plugin._api_error_payload("clear", e, last_message_id=None))
+
+    async def _api_limits(self):
+        """用量限制与告警详细面板：今日活跃会话 + 每会话自定义配置 + 插件默认值与生效值"""
+        try:
+            from zoneinfo import ZoneInfo
+            cst = ZoneInfo("Asia/Shanghai")
+            today = datetime.now(cst).strftime("%Y-%m-%d")
+
+            def _query():
+                conn = sqlite3.connect(self.plugin.db_path, timeout=10)
+                try:
+                    return conn.execute(
+                        "SELECT platform_id, session_id, total_tokens, round_count FROM usage_stats "
+                        "WHERE bucket_type='day' AND bucket_key=? "
+                        "ORDER BY (total_tokens + round_count * 1000) DESC",
+                        (today,),
+                    ).fetchall()
+                finally:
+                    conn.close()
+
+            rows = await self.plugin.db.run_async(_query)
+            overrides = await self.plugin.db.run_async(self.plugin.db.list_session_limits)
+
+            pc = self.plugin.plugin_config
+            alert_daily_default = pc.alert_daily_threshold
+            alert_session_default = pc.alert_session_threshold
+            defaults = {
+                "limit_enabled": pc.limit_enabled,
+                "limit_mode": pc.limit_mode,
+                "limit_session_default": pc.limit_session_default,
+                "limit_global_default": pc.limit_global_default,
+                "alert_enabled": pc.alert_enabled,
+                "alert_mode": pc.alert_mode,
+                "alert_daily_default": alert_daily_default,
+                "alert_session_default": alert_session_default,
+            }
+
+            sessions = []
+            for r in rows:
+                pid, sid = str(r[0]), str(r[1])
+                custom = overrides.get((pid, sid))
+                eff = {
+                    "limit_on": custom["limit_enabled"] if custom and custom.get("limit_enabled") is not None
+                                else (1 if pc.limit_enabled else 0),
+                    "limit_value": custom["limit_value"] if custom and custom.get("limit_value") is not None
+                                   else pc.limit_session_default,
+                    "alert_on": custom["alert_enabled"] if custom and custom.get("alert_enabled") is not None
+                                else (1 if pc.alert_enabled else 0),
+                    "alert_value": custom["alert_value"] if custom and custom.get("alert_value") is not None
+                                   else alert_session_default,
+                }
+                sessions.append({
+                    "platform_id": pid,
+                    "session_id": sid,
+                    "today_tokens": int(r[2] or 0),
+                    "today_rounds": int(r[3] or 0),
+                    "custom": custom,
+                    "effective": eff,
+                })
+            return jsonify({"ok": True, "today": today, "defaults": defaults, "sessions": sessions})
+        except Exception as e:
+            return jsonify(self.plugin._api_error_payload("limits", e))
+
+    async def _api_limits_save(self):
+        """保存单会话的用量限制/告警设置。字段传 null 表示该项跟随插件默认值；四项全 null 时恢复默认（删除自定义）。"""
+        try:
+            body = await qreq.get_json(force=True, silent=True) or {}
+            pid = str(body.get("platform_id", "")).strip()
+            sid = str(body.get("session_id", "")).strip()
+            if not pid or not sid:
+                return jsonify({"ok": False, "error": "platform_id / session_id 不能为空"})
+
+            def _norm_switch(v):
+                if v is None:
+                    return None
+                return 1 if bool(v) else 0
+
+            def _norm_value(v):
+                if v is None or (isinstance(v, str) and not v.strip()):
+                    return None
+                try:
+                    n = int(v)
+                except (TypeError, ValueError):
+                    return None
+                return n if n >= 0 else None
+
+            le = _norm_switch(body.get("limit_enabled"))
+            lv = _norm_value(body.get("limit_value"))
+            ae = _norm_switch(body.get("alert_enabled"))
+            av = _norm_value(body.get("alert_value"))
+            await self.plugin.db.run_async(
+                self.plugin.db.upsert_session_limit, pid, sid, le, lv, ae, av
+            )
+            return jsonify({"ok": True})
+        except Exception as e:
+            return jsonify(self.plugin._api_error_payload("limits_save", e))
