@@ -2,11 +2,9 @@
 错误处理与工具函数
 """
 import functools
-import logging
 from typing import Callable, Any, AsyncGenerator
+from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-
-logger = logging.getLogger(__name__)
 
 def handle_errors(func: Callable) -> Callable:
     """统一错误处理装饰器
