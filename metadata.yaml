@@ -1,8 +1,8 @@
 name: astrbot_plugin_session_usage_stats
 display_name: 用量统计与限制告警
-desc: 统计 AstrBot 全部模型的调用次数与 Token 消耗，提供美观的可视化仪表盘，并支持每日用量限制与告警。
+desc: 统计 AstrBot 全部模型的调用次数与 Token 消耗，提供美观的可视化仪表盘，并支持每日用量告警与限制、面板精细化管理等。
 help: 打开插件管理页查看“用量统计与限制告警”仪表盘；也可发送“会话统计 今日 / 本周 / 本月 / 模式 / 补扫”查看兼容的会话统计命令。
-version: 3.0.2
+version: 3.0.3
 astrbot_version: ">=4.26"
 author: 往昔的涟漪
 repo: "https://github.com/CyreneLian/astrbot_plugin_session_usage_stats"

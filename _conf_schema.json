@@ -80,7 +80,7 @@
         "default": 0
       },
       "alert_daily_threshold": {
-        "description": "全局每日告警默认值",
+        "description": "全局每日告警值",
         "type": "int",
         "hint": "填 0 不启用。所有会话当日累计 Token / 轮数超过此值时，触发全局告警。",
         "default": 0
@@ -130,7 +130,7 @@
         "default": 0
       },
       "limit_global_default": {
-        "description": "全局每日限制默认值",
+        "description": "全局每日限制值",
         "type": "int",
         "hint": "填 0 不启用。所有会话当日累计 Token / 轮数超过此值时，所有会话均被限制。",
         "default": 0

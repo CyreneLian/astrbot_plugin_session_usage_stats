@@ -570,7 +570,7 @@ function donutRoundSVG(entries,total,colors){
   const minVisibleArc=6;             // 极小色块至少保留的中心线可见弧长
   const minGapPx=1;                  // 小色块保护时的最小缝隙
 
-  const valid=entries.map(e=>[e[0],Number(e[1]||0),e[2]]).filter(e=>e[1]>0);
+  const valid=entries.map(e=>[e[0],Number(e[1]||0),e[2],e[3],e[4]]).filter(e=>e[1]>0);
   if(!valid.length) return '';
   const toXY=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];
 
@@ -582,7 +582,7 @@ function donutRoundSVG(entries,total,colors){
                 `A ${R_in} ${R_in} 0 1 0 ${cx} ${(cy - R_in).toFixed(2)} Z`;
 
   if(valid.length===1){
-    return `<svg class="donut-svg" viewBox="0 0 ${size} ${size}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"><path class="donut-arc" data-i="0" d="${ringD}" fill="${colors[0]}" fill-rule="evenodd"/></svg>`;
+    return `<svg class="donut-svg" viewBox="0 0 ${size} ${size}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"><path class="donut-arc" data-i="0" d="${ringD}" fill="${valid[0][3]||colors[0]}" fill-rule="evenodd"/></svg>`;
   }
 
   const totalValue=Math.max(1,total);
@@ -590,7 +590,7 @@ function donutRoundSVG(entries,total,colors){
   let angle=-Math.PI/2;
   valid.forEach((e,i)=>{
     const span=e[1]/totalValue*Math.PI*2;
-    parts.push({i,a0:angle,a1:angle+span,span,arc:span*R_mid,color:colors[i%colors.length]});
+    parts.push({i:(e[4]!=null?e[4]:i),a0:angle,a1:angle+span,span,arc:span*R_mid,color:e[3]||colors[i%colors.length]});
     angle+=span;
   });
 
@@ -828,9 +828,9 @@ function renderModelDonut(){
     : (metric==='total_tokens'&&raw.length?`暂无有 Token 的模型数据 · 已隐藏 ${hiddenZeroToken} 个 0 Token 模型`:'暂无模型数据');
   if(!data.length){$('modelDonut').innerHTML=`<div class="empty">${metric==='total_tokens'&&raw.length?'暂无有 Token 的模型统计':'暂无模型统计数据'}<br><small>${metric==='total_tokens'&&raw.length?'嵌入/重排等 0 Token 调用不会显示在 Token 占比中':(modelScope==='all'?'走 AstrBot Provider 的调用会写入全部模型统计':'重载插件后，新回复会开始写入对话模型统计')}</small></div>`;return}
   const top=data.slice(0,9);
-  const tail=data.slice(8);
+  const tail=data.slice(9);
   const rest=tail.reduce((s,r)=>s+Number(r[metric]||0),0);
-  const entries=top.map(r=>[`${r.model_name||'unknown'}${r.provider_name&&r.provider_name!=='unknown'?' · '+r.provider_name:''}`,Number(r[metric]||0),r]);
+  const entries=top.map((r,i)=>[`${r.model_name||'unknown'}${r.provider_name&&r.provider_name!=='unknown'?' · '+r.provider_name:''}`,Number(r[metric]||0),r,colors[i%colors.length],i]);
   if(rest>0){
     const others=tail
       .map(r=>({
@@ -838,14 +838,16 @@ function renderModelDonut(){
         value:Number(r[metric]||0)
       }))
       .sort((a,b)=>b.value-a.value);
-    entries.push(['其他',rest,{__others:others}]);
+    entries.push(['其他',rest,{__others:others},colors[entries.length%colors.length],entries.length]);
   }
-  const total=Math.max(1,entries.reduce((s,x)=>s+x[1],0));
-  const svg=donutRoundSVG(entries,total,colors);
-  $('modelDonut').innerHTML=`<div class="donut-wrap"><div class="donut donut-svg-wrap">${svg}${entries.length===1?'<div class="donut-center-label" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted);pointer-events:none;z-index:1">100%</div>':''}</div><div class="legend">${entries.map(([k,v,r],i)=>{
+  // 圆环按使用量排序（含「其它」），图例保留原顺序（其它在最底下）；颜色绑定到每个条目，两边不串色
+  const donutEntries=entries.slice().sort((a,b)=>Number(b[1]||0)-Number(a[1]||0));
+  const total=Math.max(1,donutEntries.reduce((s,x)=>s+x[1],0));
+  const svg=donutRoundSVG(donutEntries,total,colors);
+  $('modelDonut').innerHTML=`<div class="donut-wrap"><div class="donut donut-svg-wrap">${svg}${entries.length===1?'<div class="donut-center-label" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted);pointer-events:none;z-index:1">100%</div>':''}</div><div class="legend">${entries.map(([k,v,r,color],i)=>{
     const others=r&&r.__others?r.__others:null;
     const othersAttr=others?` data-others='${esc(JSON.stringify({items:others,metric:metricLabel}))}'`:"";
-    return `<div class="legend-item${others?' has-others':''}" data-i="${i}" style="animation-delay:${0.08+i*0.035}s"${othersAttr}><span class="dot" style="background:${colors[i%colors.length]}"></span><span style="flex:1" title="${esc(k)}">${esc(k)}${others?` <span class="others-hint" title="悬停查看被折叠的模型">▾</span>`:''}</span><b>${fmt(v)} ${metricLabel}</b><span>${(v/total*100).toFixed(1)}%</span></div>`
+    return `<div class="legend-item${others?' has-others':''}" data-i="${i}" style="animation-delay:${0.08+i*0.035}s"${othersAttr}><span class="dot" style="background:${color}"></span><span style="flex:1" title="${esc(k)}">${esc(k)}${others?` <span class="others-hint" title="悬停查看被折叠的模型">▾</span>`:''}</span><b>${fmt(v)} ${metricLabel}</b><span>${(v/total*100).toFixed(1)}%</span></div>`
   }).join('')}</div></div>`;
   bindOthersHover();
 }
@@ -1144,12 +1146,12 @@ function renderLimits(){
     defsRow('总开关',d.limit_enabled?'开启':'关闭')+
     defsRow('模式',unit)+
     defsRow('单会话每日限制默认值',d.limit_session_default>0?fmt(d.limit_session_default)+' '+unit:'未启用')+
-    defsRow('全局每日限制默认值',d.limit_global_default>0?fmt(d.limit_global_default)+' '+unit:'未启用')+
+    defsRow('全局每日限制值',d.limit_global_default>0?fmt(d.limit_global_default)+' '+unit:'未启用')+
     '</div><div class="defs-group"><div class="defs-title">🔔 用量告警默认值</div>'+
     defsRow('总开关',d.alert_enabled?'开启':'关闭')+
     defsRow('模式',aunit)+
     defsRow('单会话每日告警默认值',d.alert_session_default>0?fmt(d.alert_session_default)+' '+aunit:'未启用')+
-    defsRow('全局每日告警默认值',d.alert_daily_default>0?fmt(d.alert_daily_default)+' '+aunit:'未启用')+
+    defsRow('全局每日告警值',d.alert_daily_default>0?fmt(d.alert_daily_default)+' '+aunit:'未启用')+
     '</div>';
   renderLimitsTable();
 }
