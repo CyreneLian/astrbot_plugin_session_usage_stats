@@ -1202,7 +1202,7 @@ $('limitsTable').addEventListener('click',async ev=>{
   if(resetBtn){
     Object.assign(payload,{limit_enabled:null,limit_value:null,alert_enabled:null,alert_value:null});
   }else{
-    const cells=$('limitsTable').querySelectorAll(`[data-row="${i}"]`);
+    const cells=$('limitsTable').querySelectorAll(`[data-row="${i}"][data-f]`);
     const c=s.custom||{};
     const fields={limit_enabled:null,limit_value:null,alert_enabled:null,alert_value:null};
     cells.forEach(el=>{
